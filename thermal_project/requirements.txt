@@ -1,0 +1,17 @@
+# TIOS Thermal Pipeline — Python Dependencies
+#
+# Install with: pip install -r requirements.txt
+#
+# Core dependencies (required):
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# MAVLink telemetry (required for drone connection):
+pymavlink>=2.4.40
+
+# YOLO model (optional — for trained anomaly detection):
+# ultralytics>=8.0.0
+
+# Note: ultralytics is commented out because it has heavy dependencies.
+# Install it separately if you want to use YOLO-based detection:
+#   pip install ultralytics
