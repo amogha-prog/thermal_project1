@@ -16,15 +16,47 @@ const dgram   = require('dgram');
 
 // Telemetry state — updated by parser, broadcast by interval
 let telemetry = {
-  lat: 0,           lon: 0,           // Start at 0,0 to clearly show when real GPS fix arrives
-  alt: 0,           relAlt: 0,
-  speed: 0,         climbRate: 0,     heading: 0,
-  roll: 0,          pitch: 0,         yaw: 0,
-  battery: 100,     voltage: 0,       current: 0,
-  maxTemp: 0,       minTemp: 0,       avgTemp: 0,
+  // GPS
+  lat: 0, lon: 0,
+  alt: 0,           // AGL (primary display)
+  altMsl: 0,        // above mean sea level
+  altAgl: 0,        // above ground level (calibrated)
+
+  // Speed
+  speed: 0,         // ground speed (m/s)
+  climbRate: 0,     // vertical speed (m/s)
+  vx: 0, vy: 0, vz: 0, // NED velocity components (m/s)
+
+  // Attitude (degrees)
+  roll: 0, pitch: 0, yaw: 0,
+
+  // Heading
+  heading: 0,              // primary display (body yaw)
+  headingBody: 0,          // from ATTITUDE message
+  headingAutopilot: 0,     // from VFR_HUD
+  cog: 0,                  // course over ground from GPS
+
+  // Battery
+  voltage: 0,
+  battery: 0,              // percentage
+  current: 0,
+
+  // Thermal temps (filled by Python pipeline)
+  maxTemp: 0, minTemp: 0, avgTemp: 0,
+
+  // Status
   flightMode: 'UNKNOWN',
   armed: false,
-  fixType: 0,       satellites: 0,
+  fixType: 0,
+  satellites: 0,
+
+  // Timestamps
+  systemDatetimeUtc: '',
+  systemDatetimeIst: '',
+  gpsDatetimeUtc: '',
+  gpsDatetimeIst: '',
+  timeSyncErrorSec: null,
+
   timestamp: null,
 };
 
@@ -176,14 +208,9 @@ function openLAN() {
   const port   = parseInt(process.env.LAN_UDP_PORT || '14555');
   const host   = process.env.LAN_UDP_HOST || '0.0.0.0';
 
-  console.log(`[LAN] Starting listener on ${host}:${port}...`);
-
   socket.on('message', (msg) => {
     try {
       const raw = msg.toString().trim();
-      console.log(`[LAN] Raw Packet: ${raw}`); // DEBUG: Log raw packet to see if data is arriving
-      
-      // Basic cleanup for Python-style dict strings (single quotes to double quotes)
       const cleanJson = raw.replace(/'/g, '"');
       const data = JSON.parse(cleanJson);
 

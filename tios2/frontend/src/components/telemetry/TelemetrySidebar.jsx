@@ -236,31 +236,93 @@ export default function TelemetrySidebar({ onSelectCapture, onShowBrowser, mobil
       {/* ── Telemetry cards ─────────────────────────────────────────────── */}
       <div className="p-3 border-b border-border">
         <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-2">
-          Telemetry
+          Flight Data
         </div>
         <div className="grid grid-cols-2 gap-1.5">
-          <TelCard label="Max Temp" value={parseFloat(tel.maxTemp  || 0).toFixed(1)} unit="°C"  color="text-thermal" />
-          <TelCard label="Altitude" value={parseFloat(tel.alt      || 0).toFixed(1)} unit="m"   color="text-accent"  />
-          <TelCard label="Speed"    value={parseFloat(tel.speed    || 0).toFixed(1)} unit="m/s" color="text-green-400" />
-          <TelCard label="Battery"  value={parseFloat(tel.voltage  || 0).toFixed(1)} unit="V"   color={battColor} />
-          <TelCard label="Heading"  value={parseFloat(tel.heading  || 0).toFixed(0)} unit="°" />
+          <TelCard label="Max Temp"     value={parseFloat(tel.maxTemp    || 0).toFixed(1)} unit="°C"  color="text-thermal" />
+          <TelCard label="Alt (AGL)"    value={parseFloat(tel.altAgl     || tel.alt || 0).toFixed(1)} unit="m"   color="text-accent"  />
+          <TelCard label="Alt (MSL)"    value={parseFloat(tel.altMsl     || 0).toFixed(1)} unit="m"   color="text-[#a0b4cc]" />
+          <TelCard label="Speed"        value={parseFloat(tel.speed      || 0).toFixed(1)} unit="m/s" color="text-green-400" />
+          <TelCard label="Climb Rate"   value={parseFloat(tel.climbRate  || 0).toFixed(2)} unit="m/s" color={tel.climbRate > 0 ? 'text-green-400' : 'text-[#e2eaf4]'} />
+          <TelCard label="Battery"      value={parseFloat(tel.voltage    || 0).toFixed(1)} unit="V"   color={battColor} />
+        </div>
+
+        {/* Battery % bar */}
+        <div className="mt-2 bg-panel border border-border rounded p-2">
+          <div className="flex justify-between font-mono text-[9px] text-muted mb-1">
+            <span>BATTERY</span>
+            <span className={battColor}>{parseFloat(tel.battery || 0).toFixed(0)}%</span>
+          </div>
+          <div className="w-full h-1.5 bg-dim rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${battColor.replace('text-', 'bg-')}`}
+              style={{ width: `${Math.min(100, tel.battery || 0)}%` }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* ── Speed Components ─────────────────────────────────────────────── */}
+      <div className="p-3 border-b border-border">
+        <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-1.5">
+          Velocity (NED)
+        </div>
+        <div className="bg-panel border border-border rounded p-2 font-mono text-[10px] space-y-1">
+          {[
+            ['Vx (N)', `${parseFloat(tel.vx || 0).toFixed(2)} m/s`],
+            ['Vy (E)', `${parseFloat(tel.vy || 0).toFixed(2)} m/s`],
+            ['Vz (D)', `${parseFloat(tel.vz || 0).toFixed(2)} m/s`],
+            ['Ground', `${parseFloat(tel.speed || 0).toFixed(2)} m/s`],
+          ].map(([k, v]) => (
+            <div key={k} className="flex justify-between">
+              <span className="text-muted">{k}</span>
+              <span className="text-accent">{v}</span>
+            </div>
+          ))}
         </div>
       </div>
 
       {/* ── GPS ─────────────────────────────────────────────────────────── */}
       <div className="p-3 border-b border-border">
-        <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-2">
+        <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-1.5 flex items-center gap-2">
           GPS Position
+          <span className={`text-[8px] px-1.5 py-0.5 rounded font-mono ${
+            tel.fixType >= 3 ? 'bg-green-700/40 text-green-300' :
+            tel.fixType >= 2 ? 'bg-yellow-700/40 text-yellow-300' :
+            'bg-red-700/40 text-red-300'
+          }`}>
+            FIX {tel.fixType || 0} · {tel.satellites || 0} SAT
+          </span>
         </div>
         <div className="bg-panel border border-border rounded p-2 font-mono text-[10px] space-y-1.5">
           {[
-            ['LAT', parseFloat(tel.lat || 0).toFixed(6)],
-            ['LON', parseFloat(tel.lon || 0).toFixed(6)],
-            ['ALT', `${parseFloat(tel.alt || 0).toFixed(1)} m`],
+            ['LAT',     parseFloat(tel.lat || 0).toFixed(7)],
+            ['LON',     parseFloat(tel.lon || 0).toFixed(7)],
+            ['AGL',     `${parseFloat(tel.altAgl || tel.alt || 0).toFixed(2)} m`],
+            ['MSL',     `${parseFloat(tel.altMsl || 0).toFixed(2)} m`],
           ].map(([k, v]) => (
             <div key={k} className="flex justify-between">
               <span className="text-muted">{k}</span>
               <span className="text-accent">{v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Heading ──────────────────────────────────────────────────────── */}
+      <div className="p-3 border-b border-border">
+        <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-1.5">
+          Heading
+        </div>
+        <div className="bg-panel border border-border rounded p-2 font-mono text-[10px] space-y-1.5">
+          {[
+            ['Body (Yaw)',   `${parseFloat(tel.headingBody      || tel.heading || 0).toFixed(1)}°`],
+            ['Autopilot',   `${parseFloat(tel.headingAutopilot || 0).toFixed(1)}°`],
+            ['COG (GPS)',    `${parseFloat(tel.cog              || 0).toFixed(1)}°`],
+          ].map(([k, v]) => (
+            <div key={k} className="flex justify-between">
+              <span className="text-muted">{k}</span>
+              <span className="text-[#e2eaf4]">{v}</span>
             </div>
           ))}
         </div>
@@ -273,9 +335,34 @@ export default function TelemetrySidebar({ onSelectCapture, onShowBrowser, mobil
         </div>
         <ArtificialHorizon roll={tel.roll} pitch={tel.pitch} />
         <div className="flex justify-between mt-1.5 font-mono text-[9px] text-muted">
-          <span>R {(tel.roll  || 0).toFixed(1)}°</span>
-          <span>P {(tel.pitch || 0).toFixed(1)}°</span>
-          <span>Y {(tel.yaw   || 0).toFixed(0)}°</span>
+          <span>R {(tel.roll  || 0).toFixed(2)}°</span>
+          <span>P {(tel.pitch || 0).toFixed(2)}°</span>
+          <span>Y {(tel.yaw   || 0).toFixed(1)}°</span>
+        </div>
+      </div>
+
+      {/* ── Timestamps ───────────────────────────────────────────────────── */}
+      <div className="p-3 border-b border-border">
+        <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-1.5">
+          Time (IST)
+        </div>
+        <div className="bg-panel border border-border rounded p-2 font-mono text-[9px] space-y-1.5">
+          <div className="flex justify-between">
+            <span className="text-muted">System</span>
+            <span className="text-[#e2eaf4]">{tel.systemDatetimeIst || '—'}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted">GPS</span>
+            <span className="text-accent">{tel.gpsDatetimeIst || '—'}</span>
+          </div>
+          {tel.timeSyncErrorSec !== null && (
+            <div className="flex justify-between mt-0.5">
+              <span className="text-muted">Sync Δ</span>
+              <span className={`${Math.abs(tel.timeSyncErrorSec) > 0.5 ? 'text-warn' : 'text-green-400'}`}>
+                {tel.timeSyncErrorSec > 0 ? '+' : ''}{parseFloat(tel.timeSyncErrorSec || 0).toFixed(3)}s
+              </span>
+            </div>
+          )}
         </div>
       </div>
 

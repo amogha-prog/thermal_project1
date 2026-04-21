@@ -9,15 +9,43 @@
 import { create } from 'zustand';
 
 const DEFAULT_TELEMETRY = {
-  lat: 14.454500,  lon: 75.909180, // Start at Test Field to avoid path jumps
-  alt: 0,          relAlt: 0,
-  speed: 0,        climbRate: 0,   heading: 0,
-  roll: 0,         pitch: 0,       yaw: 0,
-  battery: 100,    voltage: 0,     current: 0,
-  maxTemp: 0,      minTemp: 0,     avgTemp: 0,
+  // GPS
+  lat: 14.454500, lon: 75.909180,
+  alt: 0,           // AGL primary display
+  altMsl: 0,        // above mean sea level
+  altAgl: 0,        // above ground level (calibrated)
+
+  // Speed
+  speed: 0, climbRate: 0,
+  vx: 0, vy: 0, vz: 0,
+
+  // Attitude (degrees)
+  roll: 0, pitch: 0, yaw: 0,
+
+  // Heading (degrees)
+  heading: 0,
+  headingBody: 0,
+  headingAutopilot: 0,
+  cog: 0,
+
+  // Battery
+  battery: 0, voltage: 0, current: 0,
+
+  // Thermal
+  maxTemp: 0, minTemp: 0, avgTemp: 0,
+
+  // Status
   flightMode: 'UNKNOWN',
   armed: false,
-  fixType: 0,      satellites: 0,
+  fixType: 0, satellites: 0,
+
+  // Timestamps
+  systemDatetimeUtc: '',
+  systemDatetimeIst: '',
+  gpsDatetimeUtc: '',
+  gpsDatetimeIst: '',
+  timeSyncErrorSec: null,
+
   timestamp: null,
 };
 
