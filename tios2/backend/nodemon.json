@@ -1,0 +1,11 @@
+{
+  "watch": ["src"],
+  "ext": "js,json",
+  "ignore": [
+    "ffmpeg_debug.txt",
+    "output.ts",
+    "node_modules",
+    "scratch"
+  ],
+  "delay": "500"
+}
