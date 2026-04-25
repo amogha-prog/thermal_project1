@@ -143,13 +143,16 @@ function drawDetections(ctx, W, H, detections) {
   if (!detections || detections.length === 0) return;
 
   detections.forEach((det) => {
-    // Map normalized center + size back to canvas coordinates
-    const cx = det.cx * W;
-    const cy = det.cy * H;
-    // Detection may have pixel coords or normalized. Handle both.
+    // Detection may have pixel coords (x,y,w,h > 1) or normalized cx/cy/w/h (<1)
     let dx, dy, dw, dh;
-    if (det.x !== undefined && det.w !== undefined && det.x > 1) {
-      // Pixel-based coords from Python (scale from detection frame to canvas)
+    if (det.is_scaled) {
+      // ── CASE A: Already-scaled pixel coords (from webcam FaceDetector) ──
+      dx = det.x;
+      dy = det.y;
+      dw = det.w;
+      dh = det.h;
+    } else if (det.x !== undefined && det.w !== undefined && det.x > 1) {
+      // ── CASE B: Python pipeline pixel coords relative to 640×480 detection frame ──
       const scaleX = W / 640;
       const scaleY = H / 480;
       dx = det.x * scaleX;
@@ -157,9 +160,11 @@ function drawDetections(ctx, W, H, detections) {
       dw = det.w * scaleX;
       dh = det.h * scaleY;
     } else {
-      // Normalized — use center
-      dw = Math.max(30, W * 0.08);
-      dh = Math.max(30, H * 0.08);
+      // ── CASE C: Normalized centre (cx/cy) — legacy fallback ──
+      const cx = (det.cx ?? 0.5) * W;
+      const cy = (det.cy ?? 0.5) * H;
+      dw = det.w ? det.w * W : Math.max(30, W * 0.08);
+      dh = det.h ? det.h * H : Math.max(30, H * 0.08);
       dx = cx - dw / 2;
       dy = cy - dh / 2;
     }
@@ -501,13 +506,27 @@ function useWebcam(canvasRef, active, isThermal, paletteKey, detections) {
     video.muted = true;
     videoRef.current = video;
 
-    const hiddenCanvas = document.createElement('canvas');;
+    const hiddenCanvas = document.createElement('canvas');
     const hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d', { willReadFrequently: isThermal });
 
-    let smoothMin = 0, smoothMax = 255;
+    // ── FIX 1: Ensure canvas has non-zero dimensions from parent container ──
+    if (canvas.width === 0 || canvas.height === 0) {
+      const parent = canvas.parentElement;
+      if (parent) {
+        canvas.width  = parent.clientWidth  || 640;
+        canvas.height = parent.clientHeight || 480;
+      } else {
+        canvas.width  = 640;
+        canvas.height = 480;
+      }
+    }
+
+    // ── FIX 2: smoothMin starts at the frame midpoint, not 0/255 ──
+    // This avoids the startup lurch where everything maps wrong
+    let smoothMin = 80, smoothMax = 200;
     let localActive = true;
 
     // Initialize FaceDetector (Chrome 74+ / Edge) — graceful fallback otherwise
@@ -536,8 +555,21 @@ function useWebcam(canvasRef, active, isThermal, paletteKey, detections) {
             if (!localActive) return;
             rafRef.current = requestAnimationFrame(drawFrame);
 
-            const W = canvas.width;
-            const H = canvas.height;
+            let W = canvas.width;
+            let H = canvas.height;
+
+            // ── FIX 1b: Re-sync canvas size from parent on every frame (handles late resize) ──
+            const parent = canvas.parentElement;
+            if (parent) {
+              const pw = parent.clientWidth;
+              const ph = parent.clientHeight;
+              if (pw > 0 && ph > 0 && (canvas.width !== pw || canvas.height !== ph)) {
+                canvas.width  = pw;
+                canvas.height = ph;
+                W = pw; H = ph;
+              }
+            }
+
             if (!W || !H || video.readyState !== video.HAVE_ENOUGH_DATA) return;
             const lut = paletteRef.current;
 
@@ -551,20 +583,20 @@ function useWebcam(canvasRef, active, isThermal, paletteKey, detections) {
               hiddenCanvas.height = procH;
               hiddenCtx.drawImage(video, 0, 0, procW, procH);
 
-              const frame     = hiddenCtx.getImageData(0, 0, procW, procH);
-              const d         = frame.data;
+              const frame      = hiddenCtx.getImageData(0, 0, procW, procH);
+              const d          = frame.data;
               const pixelCount = procW * procH;
               let rawMin = 255, rawMax = 0;
               const span = Math.max(1, smoothMax - smoothMin);
 
               // Centre-pixel luma for crosshair temperature
-              const cIdx = (Math.floor(procH / 2) * procW + Math.floor(procW / 2)) * 4;
+              const cIdx  = (Math.floor(procH / 2) * procW + Math.floor(procW / 2)) * 4;
               const cLuma = (d[cIdx] * 77 + d[cIdx+1] * 150 + d[cIdx+2] * 29) >> 8;
 
               // Single-pass: compute luma → track range → apply palette
               for (let i = 0; i < pixelCount; i++) {
                 const bi = i << 2;
-                const l = (d[bi] * 77 + d[bi+1] * 150 + d[bi+2] * 29) >> 8;
+                const l  = (d[bi] * 77 + d[bi+1] * 150 + d[bi+2] * 29) >> 8;
                 if (l < rawMin) rawMin = l;
                 if (l > rawMax) rawMax = l;
                 const norm = Math.max(0, Math.min(255, Math.round(((l - smoothMin) / span) * 255)));
@@ -573,6 +605,7 @@ function useWebcam(canvasRef, active, isThermal, paletteKey, detections) {
                 d[bi+2] = lut.b[norm];
               }
 
+              // ── FIX 2: Update smoothed range BEFORE computing centre temperature ──
               smoothMin = smoothMin * 0.85 + rawMin * 0.15;
               smoothMax = smoothMax * 0.85 + rawMax * 0.15;
 
@@ -583,32 +616,40 @@ function useWebcam(canvasRef, active, isThermal, paletteKey, detections) {
               ctx.fillStyle = 'rgba(0,0,0,0.02)';
               for (let sy = 0; sy < H; sy += 2) ctx.fillRect(0, sy, W, 1);
 
-              // ── Centre temperature label ──
+              // ── FIX 2: Centre temperature uses the freshly-updated smoothed range ──
               const minT = 20, maxT = 100;
-              const cNorm  = Math.round(((cLuma - smoothMin) / span) * 255);
-              const cTempText = (minT + (Math.max(0, Math.min(255, cNorm)) / 255) * (maxT - minT)).toFixed(1);
+              const updatedSpan = Math.max(1, smoothMax - smoothMin);
+              const cNorm      = Math.round(((cLuma - smoothMin) / updatedSpan) * 255);
+              const cTempText  = (minT + (Math.max(0, Math.min(255, cNorm)) / 255) * (maxT - minT)).toFixed(1);
 
               // ── Async Face Detection at ~10 fps ──
               if (faceDetectorRef.current && (ts - lastFaceDetectTime.current > 100)) {
                 lastFaceDetectTime.current = ts;
                 faceDetectorRef.current.detect(video)
                   .then((faces) => {
-                    // Map face bounding boxes → detection objects with realistic body temps
+                    // ── FIX 3: Store face boxes in PIXEL coords for drawDetections ──
                     faceDetectionsRef.current = faces.map((face) => {
-                      const bb = face.boundingBox;
-                      // Normalise to 0-1
-                      const vw = video.videoWidth  || W;
-                      const vh = video.videoHeight || H;
-                      const cx = (bb.x + bb.width  / 2) / vw;
-                      const cy = (bb.y + bb.height / 2) / vh;
-                      const fw = bb.width  / vw;
-                      const fh = bb.height / vh;
-                      // Realistic face temperature: 35.5 – 37.5 °C with slight jitter
+                      const bb  = face.boundingBox;
+                      const vw  = video.videoWidth  || W;
+                      const vh  = video.videoHeight || H;
+                      // Scale from video-space to canvas-space
+                      const scX = W / vw;
+                      const scY = H / vh;
+                      const bx  = bb.x      * scX;
+                      const by  = bb.y      * scY;
+                      const bw  = bb.width  * scX;
+                      const bh  = bb.height * scY;
+                      // Extend box down to include body (face box ≈ head → add 2× height)
+                      const bodyH = Math.min(bh * 3.0, H - by);
+                      // Realistic face/forehead temperature
                       const temp = 35.5 + Math.random() * 2.0;
                       return {
-                        cx, cy,
-                        w: Math.max(fw, 0.08),
-                        h: Math.max(fh, 0.10),
+                        // Pixel coords — picked up by the `det.x > 1` branch in drawDetections
+                        x: bx,
+                        y: by,
+                        w: bw,
+                        h: bodyH,
+                        is_scaled: true,
                         max_temp: parseFloat(temp.toFixed(1)),
                         severity: 'WARNING',
                         label: 'HUMAN',
@@ -637,7 +678,7 @@ function useWebcam(canvasRef, active, isThermal, paletteKey, detections) {
           rafRef.current = requestAnimationFrame(drawFrame);
         };
       } catch (err) {
-        console.error('Error accessing camera:', err);
+        console.error('[Webcam] Error accessing camera:', err);
       }
     };
 

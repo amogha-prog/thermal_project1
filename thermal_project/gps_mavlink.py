@@ -13,6 +13,8 @@ Usage:
     python gps_mavlink.py --target-port 14555 # Sends to custom port
 """
 
+import os
+os.environ['MAVLINK20'] = '1'
 import json
 import math
 import time
@@ -107,7 +109,8 @@ class MAVLinkBridge:
         logger.info(f"[MAVLink] Connecting UDP: {connection_str}")
 
         try:
-            mav = mavutil.mavlink_connection(connection_str)
+            self.mav_connection = mavutil.mavlink_connection(connection_str)
+            mav = self.mav_connection
             logger.info("[MAVLink] Waiting for heartbeat...")
             mav.wait_heartbeat(timeout=30)
             logger.info(f"[MAVLink] Connected! System {mav.target_system}, Component {mav.target_component}")
@@ -206,6 +209,49 @@ class MAVLinkBridge:
             thread = threading.Thread(target=self._run_udp, daemon=True, name="mavlink-udp")
         thread.start()
         logger.info("[MAVLink] Bridge started")
+        
+        # SIYI/Herelink wakeup ping logic — MUST send from the same port we listen on
+        def wakeup_pings():
+            while self._running:
+                if hasattr(self, 'mav_connection') and self.mav_connection.port:
+                    try:
+                        # Pack a real MAVLink GCS Heartbeat
+                        # This is what Mission Planner sends to 'wake up' the telemetry stream
+                        hb = self.mav_connection.mav.heartbeat_encode(
+                            mavutil.mavlink.MAV_TYPE_GCS, 
+                            mavutil.mavlink.MAV_AUTOPILOT_INVALID, 
+                            0, 0, 0
+                        )
+                        ping_data = hb.pack(self.mav_connection.mav)
+                        
+                        sock = self.mav_connection.port
+                        # Target the actual drone IP discovered (192.168.144.10)
+                        for ip in ["192.168.144.10", "192.168.144.11", "192.168.144.12"]:
+                            for p in [14550, 14555]:
+                                try:
+                                    # 1. Send Heartbeat (to tell router we are here)
+                                    sock.sendto(ping_data, (ip, p))
+                                    
+                                    # 2. Send Request Data Stream (to tell FC to send data)
+                                    # Target system/comp 1,1 is usually safe for ArduPilot/PX4
+                                    req = self.mav_connection.mav.request_data_stream_encode(
+                                        1, 1, 
+                                        mavutil.mavlink.MAV_DATA_STREAM_ALL,
+                                        10, 1 # 10 Hz, Start
+                                    )
+                                    sock.sendto(req.pack(self.mav_connection.mav), (ip, p))
+                                except: pass
+                        try:
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                            for p in [14550, 14555]:
+                                sock.sendto(ping_data, ("255.255.255.255", p))
+                        except: pass
+                    except Exception as e:
+                        logger.debug(f"Ping error: {e}")
+                time.sleep(5)
+
+        pinger = threading.Thread(target=wakeup_pings, daemon=True, name="mavlink-pinger")
+        pinger.start()
 
         # Also start the periodic sender (ensures data flows even between MAVLink messages)
         def periodic_send():

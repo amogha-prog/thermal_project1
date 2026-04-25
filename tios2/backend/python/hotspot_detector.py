@@ -95,13 +95,20 @@ class HotspotDetector:
     def _load_yolo(self, model_path: str):
         """Load YOLO model for thermal anomaly detection."""
         try:
-            from ultralytics import YOLO
+            import sys
             import os
-            if os.path.exists(model_path) and os.path.getsize(model_path) > 0:
-                self._yolo_model = YOLO(model_path)
-                logger.info(f"[Detector] YOLO model loaded: {model_path}")
-            else:
-                logger.warning(f"[Detector] YOLO model not found or empty: {model_path}")
+            
+            # Use the 'ultralytics-main' directory for tracking code as requested
+            ultralytics_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../ultralytics-main"))
+            if os.path.exists(ultralytics_path) and ultralytics_path not in sys.path:
+                sys.path.insert(0, ultralytics_path)
+            
+            from ultralytics import YOLO
+            
+            # Do not strictly check os.path.exists here because ultralytics auto-downloads
+            # standard models like 'yolo11n.pt' or 'yolov8n.pt'
+            self._yolo_model = YOLO(model_path)
+            logger.info(f"[Detector] YOLO model loaded: {model_path}")
         except ImportError:
             logger.warning("[Detector] ultralytics not installed — YOLO disabled")
         except Exception as e:
@@ -207,13 +214,21 @@ class HotspotDetector:
             return []
 
         try:
+            # YOLO models expect 3-channel (RGB/BGR) input
+            if len(frame.shape) == 2:
+                yolo_input = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            else:
+                yolo_input = frame
+
             results = self._yolo_model.track(
-                frame,
+                yolo_input,
                 conf=self.yolo_confidence,
                 persist=True,  # Enables tracking
-                tracker="bytetrack.yaml", # Use lightweight bytetrack algorithm
+                tracker="botsort.yaml", # Robust tracking algorithm
                 verbose=False,
                 device="cpu",
+                # Classes: 0:person, 14:bird, 15:cat, 16:dog, 17:horse, 18:sheep, 19:cow, 20:elephant, 21:bear, 22:zebra, 23:giraffe
+                classes=[0, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
             )
 
             if len(frame.shape) == 3:

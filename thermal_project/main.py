@@ -284,7 +284,7 @@ def main():
                         help="Thermal camera source (RTSP URL, device index, or file)")
     parser.add_argument("--rgb-source", default="rtsp://192.168.144.108:554/stream=1",
                         help="RGB camera source")
-    parser.add_argument("--yolo-model", default=None,
+    parser.add_argument("--yolo-model", default="yolo11n.pt",
                         help="Path to YOLO .pt model file")
     parser.add_argument("--backend-host", default="127.0.0.1",
                         help="Node.js backend host")

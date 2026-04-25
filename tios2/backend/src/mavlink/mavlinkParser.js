@@ -99,8 +99,30 @@ function openUDP() {
   const host   = process.env.MAVLINK_UDP_HOST || '0.0.0.0';
 
   // Attachment: Listen for packets immediately
-  socket.on('message', (buf) => m.parse(buf));
-  socket.bind(port, host, () => console.log(`[MAVLink] UDP listening on ${host}:${port} — Waiting for drone...`));
+  socket.on('message', (buf) => {
+    if (Math.random() > 0.95) {
+        const magic = buf[0].toString(16).toUpperCase();
+        console.log(`[MAVLink:DEBUG] Received ${buf.length} bytes | Magic: 0x${magic} | Hex: ${buf.slice(0, 10).toString('hex')}`);
+    }
+    m.parse(buf);
+  });
+  socket.bind(port, host, () => {
+    console.log(`[MAVLink] UDP listening on ${host}:${port} — Waiting for drone...`);
+    
+    // Many drone data links (like SIYI/Herelink) require the GCS to send a packet
+    // first so the router knows our IP address and starts routing telemetry.
+    try { socket.setBroadcast(true); } catch(e) {}
+    
+    const ping = Buffer.from('WakeUp\x00');
+    const sendPings = () => {
+      socket.send(ping, 0, ping.length, 14550, '192.168.144.11', () => {});
+      socket.send(ping, 0, ping.length, 14550, '192.168.144.12', () => {});
+      socket.send(ping, 0, ping.length, 14550, '255.255.255.255', () => {});
+    };
+    
+    sendPings();
+    setInterval(sendPings, 5000); // keep route alive
+  });
 
   // Protocol events
   m.on('GLOBAL_POSITION_INT', (msg) => {
@@ -136,10 +158,8 @@ function openUDP() {
 
   m.on('HEARTBEAT', (msg) => {
     telemetry.armed = !!(msg.base_mode & 128);
-    // Log heartbeat once every few seconds to show connection is alive
-    if (Math.random() > 0.95) {
-      console.log(`[MAVLink] Heartbeat detected | Armed: ${telemetry.armed} | Mode ID: ${msg.custom_mode}`);
-    }
+    // Log heartbeat every time to see if we get them!
+    console.log(`[MAVLink] Heartbeat detected | Armed: ${telemetry.armed} | Mode ID: ${msg.custom_mode}`);
   });
 
   m.on('NAMED_VALUE_FLOAT', (msg) => {
@@ -202,7 +222,7 @@ function simulateFlight() {
   }, 100);
 }
 
-// ─── LAN connection (JSON over UDP) ──────────────────────────────────────────
+// ─── LAN connection (JSON over UDP from drone_bridge.py) ───────────────────────────
 function openLAN() {
   const socket = dgram.createSocket('udp4');
   const port   = parseInt(process.env.LAN_UDP_PORT || '14555');
@@ -210,58 +230,65 @@ function openLAN() {
 
   socket.on('message', (msg) => {
     try {
-      const raw = msg.toString().trim();
-      const cleanJson = raw.replace(/'/g, '"');
-      const data = JSON.parse(cleanJson);
+      const data = JSON.parse(msg.toString().trim());
 
-      // Map fields (choosing specific data as requested)
-      if (data.lat !== undefined) telemetry.lat = parseFloat(data.lat);
-      if (data.lon !== undefined) telemetry.lon = parseFloat(data.lon);
-      if (data.alt !== undefined) telemetry.alt = parseFloat(data.alt);
+      // GPS
+      if (data.lat     !== undefined) telemetry.lat    = parseFloat(data.lat);
+      if (data.lon     !== undefined) telemetry.lon    = parseFloat(data.lon);
+      if (data.alt_agl !== undefined) telemetry.alt    = parseFloat(data.alt_agl); // primary display
+      if (data.alt_agl !== undefined) telemetry.altAgl = parseFloat(data.alt_agl);
+      if (data.alt_msl !== undefined) telemetry.altMsl = parseFloat(data.alt_msl);
 
-      // Attitude (Assumed radians -> degrees)
-      if (data.roll  !== undefined) telemetry.roll  = (parseFloat(data.roll)  * 180) / Math.PI;
-      if (data.pitch !== undefined) telemetry.pitch = (parseFloat(data.pitch) * 180) / Math.PI;
-      if (data.yaw   !== undefined) {
-        let yawDeg = (parseFloat(data.yaw) * 180) / Math.PI;
-        telemetry.yaw     = yawDeg;
-        telemetry.heading = (yawDeg + 360) % 360; // Normalize 0-360
+      // Attitude — drone_bridge.py sends DEGREES already
+      if (data.roll  !== undefined) telemetry.roll  = parseFloat(data.roll);
+      if (data.pitch !== undefined) telemetry.pitch = parseFloat(data.pitch);
+      if (data.yaw   !== undefined) telemetry.yaw   = parseFloat(data.yaw);
+
+      // Heading
+      if (data.heading_body      !== undefined) {
+        telemetry.heading      = parseFloat(data.heading_body);
+        telemetry.headingBody  = parseFloat(data.heading_body);
       }
+      if (data.heading_autopilot !== undefined) telemetry.headingAutopilot = parseFloat(data.heading_autopilot);
+      if (data.cog               !== undefined) telemetry.cog              = parseFloat(data.cog);
+
+      // Speed
+      if (data.ground_speed !== undefined) telemetry.speed     = parseFloat(data.ground_speed);
+      if (data.climb        !== undefined) telemetry.climbRate = parseFloat(data.climb);
+      if (data.vx           !== undefined) telemetry.vx        = parseFloat(data.vx);
+      if (data.vy           !== undefined) telemetry.vy        = parseFloat(data.vy);
+      if (data.vz           !== undefined) telemetry.vz        = parseFloat(data.vz);
 
       // Battery
-      if (data.battery_voltage !== undefined) {
-        telemetry.voltage = parseFloat(data.battery_voltage);
-        // Estimate % based on 6S voltage (22.8V ~ 100%, 19V ~ 0%)
-        let v = telemetry.voltage;
+      if (data.battery_voltage !== undefined) telemetry.voltage = parseFloat(data.battery_voltage);
+      if (data.battery_pct     !== undefined) {
+        telemetry.battery = parseFloat(data.battery_pct);
+      } else if (data.battery_voltage !== undefined) {
+        const v = parseFloat(data.battery_voltage);
         telemetry.battery = Math.max(0, Math.min(100, ((v - 19) / (25.2 - 19)) * 100));
       }
 
-      // Speeds
-      if (data.speed !== undefined) telemetry.speed = parseFloat(data.speed);
-      if (data.climb !== undefined) telemetry.climbRate = parseFloat(data.climb);
-
-      // Status & GPS
-      if (data.armed !== undefined)      telemetry.armed      = !!data.armed;
+      // GPS status
       if (data.satellites !== undefined) telemetry.satellites = parseInt(data.satellites);
-      if (data.fix_type !== undefined)   telemetry.fixType    = parseInt(data.fix_type);
+      if (data.fix_type   !== undefined) telemetry.fixType    = parseInt(data.fix_type);
 
-      // Flight Mode
-      if (data.mode !== undefined) {
-        // Map ArduPilot Copter modes
-        const modes = {
-          0:'STABILIZE', 1:'ACRO', 2:'ALT_HOLD', 3:'AUTO', 4:'GUIDED', 
-          5:'LOITER', 6:'RTL', 7:'CIRCLE', 9:'LAND', 11:'DRIFT', 
-          13:'SPORT', 14:'FLIP', 15:'AUTOTUNE', 16:'POSHOLD', 
-          17:'BRAKE', 18:'THROW', 19:'AVOID_ADSB', 20:'GUIDED_NOGPS', 
-          21:'SMART_RTL', 22:'FLOWHOLD', 23:'FOLLOW', 24:'ZIGZAG', 
-          25:'SYSTEMID', 26:'AUTOROTATE', 27:'AUTO_RTL'
-        };
-        telemetry.flightMode = modes[data.mode] || `MODE_${data.mode}`;
-      }
+      // Flight state
+      if (data.armed !== undefined) telemetry.armed      = !!data.armed;
+      if (data.mode  !== undefined) telemetry.flightMode = String(data.mode);
+
+      // Timestamps
+      if (data.system_datetime_utc !== undefined) telemetry.systemDatetimeUtc = data.system_datetime_utc;
+      if (data.system_datetime_ist !== undefined) telemetry.systemDatetimeIst = data.system_datetime_ist;
+      if (data.gps_datetime_utc    !== undefined) telemetry.gpsDatetimeUtc    = data.gps_datetime_utc;
+      if (data.gps_datetime_ist    !== undefined) telemetry.gpsDatetimeIst    = data.gps_datetime_ist;
+      if (data.time_sync_error_sec !== undefined) telemetry.timeSyncErrorSec  = data.time_sync_error_sec;
+
+      // Thermal (from Python pipeline)
+      if (data.maxTemp !== undefined) telemetry.maxTemp = parseFloat(data.maxTemp);
+      if (data.minTemp !== undefined) telemetry.minTemp = parseFloat(data.minTemp);
+      if (data.avgTemp !== undefined) telemetry.avgTemp = parseFloat(data.avgTemp);
 
     } catch (err) {
-      // If parsing fails, it might be a partial packet or wrong format
-      // console.warn('[LAN] Parse error:', err.message);
     }
   });
 
