@@ -201,10 +201,7 @@ export default function App() {
         />
       </div>
 
-      {/* ── Bottom scan bar ──────────────────────────────────────────────── */}
-      <div className="hidden md:block">
-        <ScanBar />
-      </div>
+
 
       {/* ── Capture detail modal ─────────────────────────────────────────── */}
       {selectedId && (

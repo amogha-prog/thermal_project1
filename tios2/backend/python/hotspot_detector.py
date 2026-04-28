@@ -63,6 +63,7 @@ class HotspotDetector:
         min_area: int = 100,
         max_area: int = 50000,
         blur_kernel: int = 5,
+        palette: str = "white-hot",
         yolo_model_path: Optional[str] = None,
         yolo_confidence: float = 0.5,
     ):
@@ -83,6 +84,7 @@ class HotspotDetector:
         self.min_area = min_area
         self.max_area = max_area
         self.blur_kernel = blur_kernel
+        self.palette = palette.lower()
         self.yolo_confidence = yolo_confidence
 
         self._detection_id = 0
@@ -113,6 +115,17 @@ class HotspotDetector:
             logger.warning("[Detector] ultralytics not installed — YOLO disabled")
         except Exception as e:
             logger.error(f"[Detector] Failed to load YOLO: {e}")
+
+    def _apply_palette(self, gray: np.ndarray) -> np.ndarray:
+        """
+        Handle palette correctly:
+        - White-hot: hotter = brighter (high pixel value)
+        - Black-hot: hotter = darker (low pixel value)
+        Returns a heat map where higher value always = hotter region.
+        """
+        if self.palette == "black-hot":
+            return 255 - gray
+        return gray
 
     def _pixel_to_temp(self, pixel_value: float) -> float:
         """Convert pixel intensity (0-255) to temperature."""
@@ -158,9 +171,16 @@ class HotspotDetector:
         # Blur to reduce thermal noise
         blurred = cv2.GaussianBlur(gray, (self.blur_kernel, self.blur_kernel), 0)
 
+        # Apply palette logic (Step 2: Handle palette correctly)
+        heat_map = self._apply_palette(blurred)
+
+        # Step 3: Find absolute hottest point in frame
+        minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(heat_map)
+        logger.debug(f"[Detector] Frame Peak: {maxVal} at {maxLoc}")
+
         # Threshold at the hotspot temperature
         thresh_value = self._temp_to_pixel(self.threshold_temp)
-        _, binary = cv2.threshold(blurred, thresh_value, 255, cv2.THRESH_BINARY)
+        _, binary = cv2.threshold(heat_map, thresh_value, 255, cv2.THRESH_BINARY)
 
         # Morphological cleanup
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -224,9 +244,10 @@ class HotspotDetector:
                 yolo_input,
                 conf=self.yolo_confidence,
                 persist=True,  # Enables tracking
-                tracker="botsort.yaml", # Robust tracking algorithm
+                tracker="bytetrack.yaml", # Faster tracking algorithm
                 verbose=False,
                 device="cpu",
+                imgsz=320,  # Reduced image size for speed on CPU
                 # Classes: 0:person, 14:bird, 15:cat, 16:dog, 17:horse, 18:sheep, 19:cow, 20:elephant, 21:bear, 22:zebra, 23:giraffe
                 classes=[0, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
             )
@@ -351,10 +372,15 @@ class HotspotDetector:
         else:
             gray = frame.copy()
 
+        # Apply palette to ensure max/min are correct for 'hot'
+        heat_map = self._apply_palette(gray)
+
         return {
-            "max_temp": round(self._pixel_to_temp(float(np.max(gray))), 1),
-            "min_temp": round(self._pixel_to_temp(float(np.min(gray))), 1),
-            "avg_temp": round(self._pixel_to_temp(float(np.mean(gray))), 1),
+            "max_temp": round(self._pixel_to_temp(float(np.max(heat_map))), 1),
+            "min_temp": round(self._pixel_to_temp(float(np.min(heat_map))), 1),
+            "avg_temp": round(self._pixel_to_temp(float(np.mean(heat_map))), 1),
+            "peak_intensity": int(np.max(heat_map)),
+            "palette": self.palette
         }
 
 

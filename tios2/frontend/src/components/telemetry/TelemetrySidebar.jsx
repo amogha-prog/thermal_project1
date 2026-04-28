@@ -176,40 +176,7 @@ export default function TelemetrySidebar({ onSelectCapture, onShowBrowser, mobil
         ✕
       </button>
 
-      {/* ── Pipeline Status ─────────────────────────────────────────────── */}
-      <div className="p-3 border-b border-border">
-        <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-2 flex items-center gap-2">
-          Analysis Pipeline
-          <span
-            className={`w-[6px] h-[6px] rounded-full shrink-0 ${
-              pipelineStatus.connected
-                ? 'bg-green-500 shadow-[0_0_6px_#22c55e] animate-pulse'
-                : 'bg-red-500/60'
-            }`}
-          />
-        </div>
-        {pipelineStatus.connected ? (
-          <div className="grid grid-cols-3 gap-1">
-            <div className="bg-panel border border-border rounded p-1.5 text-center">
-              <div className="font-mono text-[8px] text-muted">FPS</div>
-              <div className="font-mono text-[12px] font-bold text-accent">{pipelineStatus.fps}</div>
-            </div>
-            <div className="bg-panel border border-border rounded p-1.5 text-center">
-              <div className="font-mono text-[8px] text-muted">DETS</div>
-              <div className="font-mono text-[12px] font-bold text-[#e2eaf4]">{pipelineStatus.totalDetections}</div>
-            </div>
-            <div className="bg-panel border border-border rounded p-1.5 text-center">
-              <div className="font-mono text-[8px] text-muted">PEAK</div>
-              <div className="font-mono text-[12px] font-bold text-thermal">{pipelineStatus.hottestEver}°</div>
-            </div>
-          </div>
-        ) : (
-          <div className="text-[10px] text-muted font-mono text-center py-2 bg-panel rounded border border-border">
-            PYTHON PIPELINE OFFLINE
-            <div className="text-[8px] mt-1 opacity-60">Run: python main.py --simulation</div>
-          </div>
-        )}
-      </div>
+
 
       {/* ── Live Detections ──────────────────────────────────────────────── */}
       {detections.length > 0 && (
@@ -239,30 +206,12 @@ export default function TelemetrySidebar({ onSelectCapture, onShowBrowser, mobil
           Flight Data
         </div>
         <div className="grid grid-cols-2 gap-1.5">
-          <TelCard label="Max Temp"     value={parseFloat(tel.maxTemp    || 0).toFixed(1)} unit="°C"  color="text-thermal" />
-          <TelCard label="Alt (AGL)"    value={parseFloat(tel.altAgl     || tel.alt || 0).toFixed(1)} unit="m"   color="text-accent"  />
-          <TelCard label="Alt (MSL)"    value={parseFloat(tel.altMsl     || 0).toFixed(1)} unit="m"   color="text-[#a0b4cc]" />
-          <TelCard label="Speed"        value={parseFloat(tel.speed      || 0).toFixed(1)} unit="m/s" color="text-green-400" />
-          <TelCard label="Climb Rate"   value={parseFloat(tel.climbRate  || 0).toFixed(2)} unit="m/s" color={tel.climbRate > 0 ? 'text-green-400' : 'text-[#e2eaf4]'} />
           <TelCard label="Battery"      value={parseFloat(tel.voltage    || 0).toFixed(1)} unit="V"   color={battColor} />
-        </div>
-
-        {/* Battery % bar */}
-        <div className="mt-2 bg-panel border border-border rounded p-2">
-          <div className="flex justify-between font-mono text-[9px] text-muted mb-1">
-            <span>BATTERY</span>
-            <span className={battColor}>{parseFloat(tel.battery || 0).toFixed(0)}%</span>
-          </div>
-          <div className="w-full h-1.5 bg-dim rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all ${battColor.replace('text-', 'bg-')}`}
-              style={{ width: `${Math.min(100, tel.battery || 0)}%` }}
-            />
-          </div>
+          <TelCard label="Speed"        value={parseFloat(tel.speed      || 0).toFixed(1)} unit="m/s" color="text-green-400" />
         </div>
       </div>
 
-      {/* ── Speed Components ─────────────────────────────────────────────── */}
+      {/* ── Velocity (NED) ─────────────────────────────────────────────── */}
       <div className="p-3 border-b border-border">
         <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-1.5">
           Velocity (NED)
@@ -279,6 +228,19 @@ export default function TelemetrySidebar({ onSelectCapture, onShowBrowser, mobil
               <span className="text-accent">{v}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* ── Attitude ─────────────────────────────────────────────────────── */}
+      <div className="p-3 border-b border-border">
+        <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-2">
+          Attitude
+        </div>
+        <ArtificialHorizon roll={tel.roll} pitch={tel.pitch} />
+        <div className="flex justify-between mt-1.5 font-mono text-[9px] text-muted">
+          <span>R {(tel.roll  || 0).toFixed(2)}°</span>
+          <span>P {(tel.pitch || 0).toFixed(2)}°</span>
+          <span>Y {(tel.yaw   || 0).toFixed(1)}°</span>
         </div>
       </div>
 
@@ -328,18 +290,7 @@ export default function TelemetrySidebar({ onSelectCapture, onShowBrowser, mobil
         </div>
       </div>
 
-      {/* ── Attitude ─────────────────────────────────────────────────────── */}
-      <div className="p-3 border-b border-border">
-        <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-2">
-          Attitude
-        </div>
-        <ArtificialHorizon roll={tel.roll} pitch={tel.pitch} />
-        <div className="flex justify-between mt-1.5 font-mono text-[9px] text-muted">
-          <span>R {(tel.roll  || 0).toFixed(2)}°</span>
-          <span>P {(tel.pitch || 0).toFixed(2)}°</span>
-          <span>Y {(tel.yaw   || 0).toFixed(1)}°</span>
-        </div>
-      </div>
+
 
       {/* ── Timestamps ───────────────────────────────────────────────────── */}
       <div className="p-3 border-b border-border">

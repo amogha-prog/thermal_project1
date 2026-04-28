@@ -35,9 +35,14 @@ Start-Sleep 2
 Write-Host "[3/4] Frontend started (PID $($frontend.Id))" -ForegroundColor Green
 
 # Start Drone Bridge
-Write-Host "[4/4] Starting MAVLink bridge (UDP:14555 -> 14556)..." -ForegroundColor Yellow
+Write-Host "[4/5] Starting MAVLink bridge (UDP:14555 -> 14556)..." -ForegroundColor Yellow
 $bridge = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd 'd:\aeroluna thermal project\tios2\backend'; python -u drone_bridge.py" -PassThru
-Write-Host "[4/4] Bridge started (PID $($bridge.Id))" -ForegroundColor Green
+Write-Host "[4/5] Bridge started (PID $($bridge.Id))" -ForegroundColor Green
+
+# Start Analysis Pipeline
+Write-Host "[5/5] Starting Hotspot Detection Pipeline..." -ForegroundColor Yellow
+$pipeline = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd 'd:\aeroluna thermal project\tios2\backend\python'; python -u main.py --simulation" -PassThru
+Write-Host "[5/5] Pipeline started (PID $($pipeline.Id))" -ForegroundColor Green
 
 Write-Host "`n=== All services started ===" -ForegroundColor Cyan
 Write-Host "Dashboard: http://localhost:5173" -ForegroundColor White

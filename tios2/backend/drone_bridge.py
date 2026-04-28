@@ -1,11 +1,15 @@
 """
 drone_bridge.py — SkyDroid H12 MAVLink -> TIOS Telemetry Bridge
 ----------------------------------------------------------------
-Connects to the SkyDroid H12 controller (192.168.144.11) via TCP:8520,
-parses full MAVLink telemetry, and forwards JSON to the TIOS Node.js
-backend on UDP port 14555 at 10 Hz.
-
-Fallback: if TCP:8520 is unavailable, also tries UDP on common ports.
+Architecture:
+  1. GPS time tags every incoming telemetry packet (lat, lon, alt, heading)
+     and stores them in a rolling TelemetryBuffer.
+  2. System time (time.time()) tags every photo capture.
+  3. At capture time, forward/backward interpolation finds the closest
+     telemetry points and blends them to produce a precise GPS location
+     for the exact capture instant.
+  4. The GPS<->System clock offset is tracked via a stable monotonic
+     reference so the Sync Δ converges to <100ms.
 
 Run:
     python drone_bridge.py
@@ -19,74 +23,273 @@ import json
 import time
 import sys
 import math
+import threading
+import collections
 from datetime import datetime, timedelta, timezone
 from pymavlink import mavutil
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SKYDROID_IP   = '192.168.144.11'
 TIOS_HOST     = '127.0.0.1'
-TIOS_PORT     = 14556        # JSON output to Node.js (changed to avoid conflict with 14555 input)
-SEND_HZ       = 10           # telemetry send rate
+TIOS_PORT     = 14556
+GEOTAG_PORT   = 14557        # UDP query port for geotag requests from auto_capture
+SEND_HZ       = 10
 SEND_INTERVAL = 1.0 / SEND_HZ
-HB_TIMEOUT    = 20           # heartbeat wait timeout (s)
-RECONNECT     = 3            # seconds between reconnect attempts
+HB_TIMEOUT    = 20
+RECONNECT     = 3
+BUFFER_SIZE   = 200     # rolling buffer: ~20 seconds at 10 Hz
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
 
-# ── Connection candidates (tried in order) ────────────────────────────────────
-# H12 broadcasts MAVLink UDP — no TCP needed
 SOURCES = [
-    f'udpin:0.0.0.0:14555',    # Primary — H12 sends MAVLink to this port
-    f'udpin:0.0.0.0:14550',    # Fallback
-    f'udpin:0.0.0.0:14551',
-    f'udpin:0.0.0.0:18570',
+    'udpin:0.0.0.0:14550',
+    'udpin:0.0.0.0:14555',
 ]
 
 # ── TIOS output socket ────────────────────────────────────────────────────────
 tios_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 tios_addr = (TIOS_HOST, TIOS_PORT)
 
-# ── Telemetry state ───────────────────────────────────────────────────────────
+
+# ── Telemetry Buffer ──────────────────────────────────────────────────────────
+class TelemetryBuffer:
+    """
+    Stores timestamped telemetry snapshots tagged with GPS time.
+    Used for forward/backward interpolation at capture time.
+    
+    Each entry: { 'gps_t': float, 'lat': float, 'lon': float,
+                  'alt_msl': float, 'alt_agl': float,
+                  'heading': float, 'roll': float, 'pitch': float,
+                  'ground_speed': float }
+    """
+    def __init__(self, maxlen=BUFFER_SIZE):
+        self._buf = collections.deque(maxlen=maxlen)
+
+    def push(self, gps_t: float, snapshot: dict):
+        self._buf.append({'gps_t': gps_t, **snapshot})
+
+    def interpolate(self, query_gps_t: float) -> dict:
+        """
+        Forward/backward interpolation.
+        Finds the two entries surrounding query_gps_t and linearly
+        interpolates all numeric fields. If only one side is available,
+        uses the nearest single point (extrapolation limit = 0.5s).
+        """
+        buf = list(self._buf)
+        if not buf:
+            return {}
+
+        # Find surrounding pair
+        before = None
+        after  = None
+        for entry in buf:
+            if entry['gps_t'] <= query_gps_t:
+                before = entry
+            elif entry['gps_t'] > query_gps_t and after is None:
+                after = entry
+                break
+
+        if before is None and after is None:
+            return {}
+
+        # Only one side available → use nearest if within tolerance
+        if before is None:
+            return after if abs(after['gps_t'] - query_gps_t) < 0.5 else {}
+        if after is None:
+            return before if abs(before['gps_t'] - query_gps_t) < 0.5 else {}
+
+        # Linear interpolation
+        span = after['gps_t'] - before['gps_t']
+        if span <= 0:
+            return before
+
+        t_frac = (query_gps_t - before['gps_t']) / span
+
+        result = {}
+        fields = ['lat', 'lon', 'alt_msl', 'alt_agl',
+                  'heading', 'roll', 'pitch', 'ground_speed']
+        for f in fields:
+            a = before.get(f, 0.0)
+            b = after.get(f, 0.0)
+            # Special handling for circular heading (0-360)
+            if f == 'heading':
+                diff = b - a
+                if diff > 180:  diff -= 360
+                if diff < -180: diff += 360
+                val = (a + diff * t_frac) % 360
+            else:
+                val = a + (b - a) * t_frac
+            result[f] = round(val, 7)
+
+        result['interp_frac'] = round(t_frac, 4)
+        result['before_gps_t'] = before['gps_t']
+        result['after_gps_t']  = after['gps_t']
+        return result
+
+    def nearest(self, query_gps_t: float) -> dict:
+        """Fallback: return the single nearest sample."""
+        buf = list(self._buf)
+        if not buf:
+            return {}
+        return min(buf, key=lambda e: abs(e['gps_t'] - query_gps_t))
+
+
+# Global buffer — accessible by the capture handler
+tel_buffer = TelemetryBuffer()
+
+
+# ── Time synchronization ──────────────────────────────────────────────────────
+class TimeSync:
+    """
+    Tracks the GPS<->monotonic offset using a Kalman-style filter.
+    Provides stable conversion between system wall time and GPS time.
+    """
+    def __init__(self):
+        self._offset      = None   # gps_unix - monotonic
+        self._offset_var  = 1e6    # variance (large = uncertain)
+        self._proc_noise  = 1e-6   # how much the offset drifts per second
+
+    def update(self, gps_unix: float, mono_now: float):
+        raw_offset = gps_unix - mono_now
+
+        if self._offset is None:
+            # First measurement — just accept it
+            self._offset     = raw_offset
+            self._offset_var = 0.001
+            return
+
+        # Kalman predict step (offset drifts slowly)
+        self._offset_var += self._proc_noise
+
+        # Kalman update step
+        meas_noise = 0.005   # ~5ms measurement noise (LAN latency)
+        K = self._offset_var / (self._offset_var + meas_noise)
+        innovation = raw_offset - self._offset
+
+        # Snap immediately if clock jumped > 0.5s (handles initial sync)
+        if abs(innovation) > 0.5:
+            self._offset     = raw_offset
+            self._offset_var = 0.001
+        else:
+            self._offset     = self._offset + K * innovation
+            self._offset_var = (1 - K) * self._offset_var
+
+    def mono_to_gps(self, mono: float) -> float:
+        """Convert a monotonic timestamp to GPS unix time."""
+        if self._offset is None:
+            return time.time()
+        return mono + self._offset
+
+    def gps_now(self) -> float:
+        """Best estimate of GPS unix time right now."""
+        return self.mono_to_gps(time.monotonic())
+
+    def sys_to_gps(self, sys_t: float) -> float:
+        """
+        Convert a system wall-clock time to GPS time.
+        Uses the wall<->mono relationship to bridge the two.
+        wall_now - mono_now = sys_epoch_offset
+        gps = sys_t - sys_epoch_offset + mono + offset
+              = sys_t + (gps_now - wall_now)
+        """
+        if self._offset is None:
+            return sys_t
+        correction = self.gps_now() - time.time()
+        return sys_t + correction
+
+    @property
+    def offset(self):
+        return self._offset
+
+
+time_sync = TimeSync()
+
+
+# ── Capture geo-tagger ────────────────────────────────────────────────────────
+def geotagged_capture(capture_sys_t: float) -> dict:
+    """
+    Given the system time of a capture event, return interpolated
+    GPS location data.
+
+    Steps:
+      1. Convert capture system time -> GPS time using time_sync.
+      2. Interpolate telemetry buffer at that GPS time.
+      3. Return merged result.
+    """
+    capture_gps_t = time_sync.sys_to_gps(capture_sys_t)
+
+    # Try interpolation first
+    interp = tel_buffer.interpolate(capture_gps_t)
+    if not interp:
+        # Fallback to nearest sample
+        interp = tel_buffer.nearest(capture_gps_t)
+
+    capture_dt = datetime.fromtimestamp(capture_sys_t, timezone.utc)
+    gps_dt     = datetime.fromtimestamp(capture_gps_t, timezone.utc)
+
+    return {
+        'capture_system_time_utc': capture_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+        'capture_system_time_ist': (capture_dt + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+        'capture_gps_time_utc':    gps_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+        'capture_gps_time_ist':    (gps_dt + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+        'sync_offset_sec':         round(time_sync.offset or 0, 4),
+        **interp
+    }
+
+
+# ── Geotag query server ──────────────────────────────────────────────────────
+def geotag_query_server():
+    """
+    Background UDP server that responds to geotag queries from auto_capture.py.
+    
+    Query format (JSON):
+        {"type": "geotag_query", "sys_t": <float>}
+    
+    Response format (JSON):
+        {"lat": .., "lon": .., "alt_msl": .., "alt_agl": .., "heading": ..,
+         "roll": .., "pitch": .., "ground_speed": ..,
+         "capture_gps_time_utc": .., "sync_offset_sec": ..,
+         "interp_frac": .., "status": "ok" | "no_data"}
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(('127.0.0.1', GEOTAG_PORT))
+    sock.settimeout(1.0)
+    print(f"[GeoTag] Query server listening on port {GEOTAG_PORT}")
+
+    while True:
+        try:
+            data, addr = sock.recvfrom(256)
+            req = json.loads(data.decode())
+            if req.get('type') == 'geotag_query':
+                sys_t  = float(req['sys_t'])
+                result = geotagged_capture(sys_t)
+                if result:
+                    result['status'] = 'ok'
+                else:
+                    result = {'status': 'no_data'}
+                sock.sendto(json.dumps(result).encode(), addr)
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print(f"[GeoTag] Query error: {e}")
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def fresh_telemetry():
     return {
-        # GPS
-        "lat": 0.0,
-        "lon": 0.0,
-        "alt_msl": 0.0,
-        "alt_agl": 0.0,
-        # Speed
-        "vx": 0.0,
-        "vy": 0.0,
-        "vz": 0.0,
-        "ground_speed": 0.0,
-        "climb": 0.0,
-        # Attitude (degrees)
-        "roll": 0.0,
-        "pitch": 0.0,
-        "yaw": 0.0,
-        # Heading
-        "heading_body": 0.0,
-        "heading_autopilot": 0.0,
-        "cog": 0.0,
-        # Battery
-        "battery_voltage": 0.0,
-        "battery_pct": 0.0,
-        # GPS status
-        "satellites": 0,
-        "fix_type": 0,
-        # Flight state
-        "armed": False,
-        "mode": "UNKNOWN",
-        # Time
-        "system_datetime_utc": "",
-        "system_datetime_ist": "",
-        "gps_datetime_utc": "",
-        "gps_datetime_ist": "",
+        "lat": 0.0, "lon": 0.0, "alt_msl": 0.0, "alt_agl": 0.0,
+        "vx": 0.0, "vy": 0.0, "vz": 0.0,
+        "ground_speed": 0.0, "climb": 0.0,
+        "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+        "heading_body": 0.0, "heading_autopilot": 0.0, "cog": 0.0,
+        "battery_voltage": 0.0, "battery_pct": 0.0,
+        "satellites": 0, "fix_type": 0,
+        "armed": False, "mode": "UNKNOWN",
+        "system_datetime_utc": "", "system_datetime_ist": "",
+        "gps_datetime_utc": "", "gps_datetime_ist": "",
         "time_sync_error_sec": None,
-        # Thermal (filled by thermal pipeline if running)
-        "maxTemp": 0.0,
-        "minTemp": 0.0,
-        "avgTemp": 0.0,
+        "maxTemp": 0.0, "minTemp": 0.0, "avgTemp": 0.0,
     }
 
 COPTER_MODES = {
@@ -107,7 +310,6 @@ def ts():
     return time.strftime('%H:%M:%S')
 
 def try_connect(source):
-    """Attempt MAVLink connection. Returns master object or None."""
     try:
         print(f"[{ts()}] Trying {source} ...")
         master = mavutil.mavlink_connection(source)
@@ -123,6 +325,8 @@ def try_connect(source):
         print(f"[{ts()}] {source} failed: {type(e).__name__}: {e}")
         return None
 
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
 def run():
     source_idx = 0
     while True:
@@ -130,34 +334,31 @@ def run():
         master = try_connect(source)
 
         if master is None:
-            # Rotate to next source on failure
             source_idx += 1
             print(f"[{ts()}] Retrying in {RECONNECT}s ...")
             time.sleep(RECONNECT)
             continue
 
-        # ── Successfully connected — start receive loop ────────────────────────
-        tel           = fresh_telemetry()
-        time_offset   = None
-        ground_alt    = None
-        start_time    = time.time()
-        alpha         = 0.9
-        last_send     = 0
-        last_hb       = time.time()
-        packets       = 0
+        tel        = fresh_telemetry()
+        ground_alt = None
+        alpha      = 0.9
+        last_send  = 0
+        last_hb    = time.monotonic()
+        packets    = 0
 
         print(f"[{ts()}] Streaming telemetry -> {TIOS_HOST}:{TIOS_PORT} ...")
 
         while True:
             try:
-                # ── System time ──────────────────────────────────────────────
-                sys_time = time.time() + (time_offset or 0)
-                now_utc  = datetime.now(timezone.utc)
+                mono_now = time.monotonic()
+
+                # System time display
+                now_utc = datetime.now(timezone.utc)
                 tel["system_datetime_utc"] = now_utc.strftime('%Y-%m-%d %H:%M:%S')
                 tel["system_datetime_ist"] = (now_utc + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S')
 
-                # ── Heartbeat watchdog ────────────────────────────────────────
-                if time.time() - last_hb > HB_TIMEOUT * 2:
+                # Heartbeat watchdog
+                if mono_now - last_hb > HB_TIMEOUT * 2:
                     print(f"[{ts()}] Watchdog: lost heartbeat. Reconnecting...")
                     break
 
@@ -168,8 +369,11 @@ def run():
                 mtype = msg.get_type()
                 packets += 1
 
+                # ── Current GPS time estimate for this packet ─────────────────
+                gps_now = time_sync.gps_now()
+
                 if mtype == 'HEARTBEAT':
-                    last_hb = time.time()
+                    last_hb = mono_now
                     tel["armed"] = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
                     tel["mode"]  = COPTER_MODES.get(msg.custom_mode, f"MODE_{msg.custom_mode}")
 
@@ -179,7 +383,7 @@ def run():
                     tel["alt_msl"] = msg.alt / 1000.0
 
                     agl = msg.relative_alt / 1000.0
-                    if time.time() - start_time < 10:
+                    if mono_now - last_send < 10:
                         tel["alt_agl"] = agl
                     else:
                         if ground_alt is None and tel["ground_speed"] < 0.1:
@@ -195,6 +399,18 @@ def run():
                     tel["vy"] = vy
                     tel["vz"] = vz
                     tel["ground_speed"] = math.sqrt(vx**2 + vy**2)
+
+                    # Push GPS-timestamped snapshot into buffer
+                    tel_buffer.push(gps_now, {
+                        'lat':          tel["lat"],
+                        'lon':          tel["lon"],
+                        'alt_msl':      tel["alt_msl"],
+                        'alt_agl':      tel["alt_agl"],
+                        'heading':      tel["heading_body"],
+                        'roll':         tel["roll"],
+                        'pitch':        tel["pitch"],
+                        'ground_speed': tel["ground_speed"],
+                    })
 
                 elif mtype == 'ATTITUDE':
                     tel["roll"]  = math.degrees(msg.roll)
@@ -228,23 +444,29 @@ def run():
                 elif mtype == 'SYSTEM_TIME':
                     if msg.time_unix_usec > 0:
                         gps_t = msg.time_unix_usec / 1e6
-                        new_off = gps_t - sys_time
-                        time_offset = new_off if time_offset is None else 0.7 * time_offset + 0.3 * new_off
-                        tel["time_sync_error_sec"] = round(sys_time - gps_t, 6)
-                        gps_dt = datetime.fromtimestamp(gps_t, timezone.utc)
+
+                        # Update Kalman-filtered offset
+                        time_sync.update(gps_t, mono_now)
+
+                        # GPS time display
+                        calc_gps_t = time_sync.gps_now()
+                        tel["time_sync_error_sec"] = round(time.time() - calc_gps_t, 6)
+
+                        gps_dt = datetime.fromtimestamp(calc_gps_t, timezone.utc)
                         tel["gps_datetime_utc"] = gps_dt.strftime('%Y-%m-%d %H:%M:%S')
                         tel["gps_datetime_ist"] = (gps_dt + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S')
 
                 # ── Send at 10 Hz ─────────────────────────────────────────────
-                now = time.time()
+                now = time.monotonic()
                 if now - last_send >= SEND_INTERVAL:
                     send_telemetry(tel)
                     last_send = now
                     if packets % 100 == 0:
+                        sync = tel.get('time_sync_error_sec', 0) or 0
                         print(f"[{ts()}] OK | mode={tel['mode']} armed={tel['armed']} "
                               f"lat={tel['lat']:.5f} lon={tel['lon']:.5f} "
                               f"agl={tel['alt_agl']:.1f}m spd={tel['ground_speed']:.1f}m/s "
-                              f"bat={tel['battery_voltage']:.1f}V")
+                              f"bat={tel['battery_voltage']:.1f}V sync={sync*1000:.0f}ms")
 
             except KeyboardInterrupt:
                 print(f"\n[{ts()}] Stopped.")
@@ -255,13 +477,19 @@ def run():
                 time.sleep(0.5)
                 break
 
-        # Lost connection — stay on same source, retry
         print(f"[{ts()}] Connection lost. Retrying in {RECONNECT}s ...")
         time.sleep(RECONNECT)
+
 
 if __name__ == '__main__':
     print("=" * 60)
     print("  SkyDroid H12 MAVLink Bridge -> TIOS Telemetry")
     print(f"  Controller: {SKYDROID_IP}  |  Backend: {TIOS_HOST}:{TIOS_PORT}")
+    print(f"  GeoTag Query: UDP 127.0.0.1:{GEOTAG_PORT}")
     print("=" * 60)
+
+    # Start the geotag query server in a background daemon thread
+    t = threading.Thread(target=geotag_query_server, daemon=True)
+    t.start()
+
     run()

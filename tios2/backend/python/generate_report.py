@@ -183,11 +183,6 @@ def cover_page(canv, caps, mission_id):
     canv.setFillColor(C_MID)
     canv.rect(MARGIN - 4, h*0.42, 4, h*0.46, fill=1, stroke=0)
 
-    # camera label
-    canv.setFont("Helvetica", 10)
-    canv.setFillColor(C_MID)
-    canv.drawString(MARGIN + 6, h * 0.90, "SKYDROID C12  ·  DUAL LIGHT GIMBAL SYSTEM")
-
     # main title
     canv.setFont("Helvetica-Bold", 34)
     canv.setFillColor(C_WHITE)
@@ -208,40 +203,6 @@ def cover_page(canv, caps, mission_id):
     canv.drawString(MARGIN + 6, h * 0.63, "This document provides a comprehensive intelligence analysis of thermal signatures")
     canv.drawString(MARGIN + 6, h * 0.61, "detected during the automated flight mission. Each event was successfully isolated,")
     canv.drawString(MARGIN + 6, h * 0.59, "geo-tagged, and classified by the onboard AI to ensure rapid situational awareness.")
-
-    # stats grid
-    counts = {"human": 0, "animal": 0, "vehicle": 0}
-    for c in caps:
-        lbl = c.get("target_class", "")
-        if lbl in counts:
-            counts[lbl] += 1
-
-    stats = [
-        ("TOTAL CAPTURES", str(len(caps))),
-        ("HUMANS",   str(counts["human"])),
-        ("ANIMALS",  str(counts["animal"])),
-        ("VEHICLES", str(counts["vehicle"])),
-    ]
-    box_w = (w - 2*MARGIN) / 4
-    bx    = MARGIN
-    by    = h * 0.45
-    for stat_label, stat_val in stats:
-        canv.setFillColor(C_MID)
-        canv.setFillColorRGB(0.294, 0.435, 0.749, alpha=0.18)
-        canv.roundRect(bx, by, box_w - 4, 22*mm, 3, fill=1, stroke=0)
-        canv.setStrokeColor(C_MID)
-        canv.setLineWidth(0.5)
-        canv.roundRect(bx, by, box_w - 4, 22*mm, 3, fill=0, stroke=1)
-
-        canv.setFont("Helvetica-Bold", 20)
-        canv.setFillColor(C_WHITE)
-        canv.drawCentredString(bx + (box_w-4)/2, by + 11*mm, stat_val)
-
-        canv.setFont("Helvetica", 7.5)
-        canv.setFillColor(C_GRAY)
-        canv.drawCentredString(bx + (box_w-4)/2, by + 6*mm, stat_label)
-
-        bx += box_w
 
     # mission meta
     my = h * 0.28
@@ -560,73 +521,7 @@ def generate_confidence_chart(caps, width_px=900, height_px=260) -> io.BytesIO:
     return buf
 
 
-# ── Summary page ──────────────────────────────────────────────────────────────
 def summary_section(story, caps):
-    counts   = {"human": 0, "animal": 0, "vehicle": 0}
-    conf_sum = {"human": 0.0, "animal": 0.0, "vehicle": 0.0}
-    for c in caps:
-        lbl = c.get("target_class", "")
-        if lbl in counts:
-            counts[lbl]   += 1
-            conf_sum[lbl] += c.get("confidence", 0)
-
-    story.append(Paragraph("Mission Summary", STYLES["section"]))
-    story.append(HRFlowable(width="100%", thickness=0.5,
-                             color=C_MID, spaceAfter=8))
-
-    # Summary table
-    rows = [
-        ["Target Class", "Count", "Avg Confidence", "Priority"],
-        ["Human",
-         str(counts["human"]),
-         f"{(conf_sum['human']/max(counts['human'],1)*100):.0f}%",
-         "HIGH"],
-        ["Animal",
-         str(counts["animal"]),
-         f"{(conf_sum['animal']/max(counts['animal'],1)*100):.0f}%",
-         "MEDIUM"],
-        ["Vehicle",
-         str(counts["vehicle"]),
-         f"{(conf_sum['vehicle']/max(counts['vehicle'],1)*100):.0f}%",
-         "MEDIUM"],
-    ]
-
-    col_w = [(PAGE_W - 2*MARGIN) / 4] * 4
-    t = Table(rows, colWidths=col_w)
-    t.setStyle(TableStyle([
-        # header
-        ("BACKGROUND",    (0,0), (-1,0), C_DARK),
-        ("TEXTCOLOR",     (0,0), (-1,0), C_WHITE),
-        ("FONTNAME",      (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE",      (0,0), (-1,0), 9),
-        ("ALIGN",         (0,0), (-1,0), "CENTER"),
-        ("TOPPADDING",    (0,0), (-1,0), 8),
-        ("BOTTOMPADDING", (0,0), (-1,0), 8),
-        # data rows
-        ("FONTNAME",      (0,1), (-1,-1), "Helvetica"),
-        ("FONTSIZE",      (0,1), (-1,-1), 9),
-        ("ALIGN",         (1,1), (-1,-1), "CENTER"),
-        ("ALIGN",         (0,1), (0,-1),  "LEFT"),
-        ("LEFTPADDING",   (0,1), (0,-1),  8),
-        ("TOPPADDING",    (0,1), (-1,-1), 7),
-        ("BOTTOMPADDING", (0,1), (-1,-1), 7),
-        # alternating rows
-        ("BACKGROUND",    (0,1), (-1,1), C_PALE),
-        ("BACKGROUND",    (0,2), (-1,2), C_WHITE),
-        ("BACKGROUND",    (0,3), (-1,3), C_PALE),
-        # grid
-        ("GRID",          (0,0), (-1,-1), 0.3, C_LGRAY),
-        ("LINEABOVE",     (0,0), (-1,0),  0.8, C_DARK),
-        ("LINEBELOW",     (0,-1),(-1,-1), 0.8, C_MID),
-        # colour priority column
-        ("TEXTCOLOR",     (3,1), (3,1), TARGET_COLORS["human"]),
-        ("FONTNAME",      (3,1), (3,-1), "Helvetica-Bold"),
-        ("TEXTCOLOR",     (3,2), (3,2), TARGET_COLORS["animal"]),
-        ("TEXTCOLOR",     (3,3), (3,3), TARGET_COLORS["vehicle"]),
-    ]))
-    story.append(t)
-    story.append(Spacer(1, 10))
-
     # GPS bounding box
     gps_entries = [c["gps"] for c in caps if c.get("gps")]
     if gps_entries:
@@ -703,32 +598,7 @@ def summary_section(story, caps):
             STYLES["body"]))
         story.append(Spacer(1, 10))
 
-    # ── Confidence chart ──────────────────────────────────────────────────────
-    story.append(Paragraph("Confidence Analysis", STYLES["section"]))
-    story.append(HRFlowable(width="100%", thickness=0.5,
-                             color=C_MID, spaceAfter=8))
-
-    conf_buf = generate_confidence_chart(caps)
-    if conf_buf:
-        usable_w = PAGE_W - 2 * MARGIN
-        conf_img = RLImage(conf_buf,
-                           width=usable_w,
-                           height=usable_w * (260/900))
-        conf_table = Table([[conf_img]], colWidths=[usable_w])
-        conf_table.setStyle(TableStyle([
-            ("BACKGROUND",    (0,0), (-1,-1), C_DARK),
-            ("LEFTPADDING",   (0,0), (-1,-1), 0),
-            ("RIGHTPADDING",  (0,0), (-1,-1), 0),
-            ("TOPPADDING",    (0,0), (-1,-1), 0),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 0),
-            ("BOX",           (0,0), (-1,-1), 0.8, C_MID),
-        ]))
-        story.append(conf_table)
-        story.append(Paragraph(
-            "Dashed line marks 50% confidence threshold. "
-            "Bars coloured by target class: green=human, amber=animal, blue=vehicle.",
-            STYLES["small"]))
-        story.append(Spacer(1, 6))
+    story.append(Spacer(1, 6))
 
     story.append(PageBreak())
 
@@ -888,13 +758,10 @@ def capture_card(story, meta, idx):
         ])
         return ts
 
-    dt = Table(detection_data, colWidths=[panel_w*0.46, panel_w*0.54])
-    dt.setStyle(panel_style(detection_data, C_DARK))
-
     gt = Table(gps_data, colWidths=[panel_w*0.46, panel_w*0.54])
     gt.setStyle(panel_style(gps_data, C_MID))
 
-    panels = Table([[dt, gt]], colWidths=[panel_w, panel_w],
+    panels = Table([[gt]], colWidths=[panel_w*2],
                    spaceAfter=0)
     panels.setStyle(TableStyle([
         ("VALIGN",       (0,0), (-1,-1), "TOP"),
@@ -902,7 +769,6 @@ def capture_card(story, meta, idx):
         ("RIGHTPADDING", (0,0), (-1,-1), 0),
         ("TOPPADDING",   (0,0), (-1,-1), 0),
         ("BOTTOMPADDING",(0,0), (-1,-1), 0),
-        ("COLPADDING",   (1,0), (1,-1),  4),
     ]))
     story.append(panels)
     story.append(Spacer(1, 14))

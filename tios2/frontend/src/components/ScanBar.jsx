@@ -67,44 +67,7 @@ export default function ScanBar() {
         <canvas ref={canvasRef} height={32} className="w-full h-full block opacity-90" />
       </div>
 
-      {/* Live flight readouts */}
-      <div className="flex gap-4 shrink-0 bg-black/20 px-4 py-1.5 rounded-full border border-white/5">
-        {[
-          { label: 'SPD', value: `${parseFloat(tel.speed     || 0).toFixed(1)} m/s` },
-          { label: 'CLB', value: `${parseFloat(tel.climbRate || 0).toFixed(1)} m/s` },
-          { label: 'HDG', value: `${parseFloat(tel.heading   || 0).toFixed(0)}°`    },
-          { label: 'PWR', value: `${parseFloat(tel.voltage   || 0).toFixed(1)} V`   },
-        ].map(({ label, value }) => (
-          <div key={label} className="text-center w-12 flex flex-col justify-center">
-            <div className="font-mono text-[8px] text-white/50 tracking-widest mb-0.5">{label}</div>
-            <div className="font-mono text-[11px] text-accent font-bold leading-none">{value}</div>
-          </div>
-        ))}
 
-        <div className="w-px h-6 bg-white/10 mx-1" />
-
-        {/* Detection counter */}
-        <div className="text-center w-10 flex flex-col justify-center">
-          <div className="font-mono text-[8px] text-white/50 tracking-widest mb-0.5">DETS</div>
-          <div className={`font-mono text-[11px] font-bold leading-none ${
-            detections.length > 0 ? 'text-thermal shadow-glow-thermal' : 'text-accent'
-          }`}>
-            {detections.length}
-          </div>
-        </div>
-
-        <div className="w-px h-6 bg-white/10 mx-1" />
-
-        {/* Pipeline indicator */}
-        <div className="text-center w-12 flex flex-col justify-center">
-          <div className="font-mono text-[8px] text-white/50 tracking-widest mb-0.5">PIPE</div>
-          <div className={`font-mono text-[11px] font-bold leading-none ${
-            pipelineStatus.connected ? 'text-green-400' : 'text-white/30'
-          }`}>
-            {pipelineStatus.connected ? 'ACTIVE' : 'OFF'}
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

@@ -19,7 +19,7 @@ import time
 import socket
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import numpy as np
@@ -80,6 +80,23 @@ class AutoCapture:
         if self.notify_backend:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+    def _geotag_query(self, capture_sys_t: float) -> dict:
+        """
+        Query drone_bridge's geotag server for interpolated GPS coordinates
+        at the exact moment of this capture (forward/backward interpolation).
+        """
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(0.15)   # 150ms max wait — capture must not block
+            query = json.dumps({'type': 'geotag_query', 'sys_t': capture_sys_t}).encode()
+            sock.sendto(query, ('127.0.0.1', 14557))
+            data, _ = sock.recvfrom(1024)
+            sock.close()
+            return json.loads(data.decode())
+        except Exception as e:
+            logger.debug(f"[AutoCapture] GeoTag query failed: {e}")
+            return {}
+
     def _should_trigger(self, detections: list) -> bool:
         """Check if any detection meets the trigger criteria."""
         if self._capture_count >= self.max_captures:
@@ -110,18 +127,38 @@ class AutoCapture:
         """Save capture frames and metadata to disk."""
         self._capture_count += 1
         self._last_capture_time = time.time()
+        capture_sys_t = self._last_capture_time  # precise system wall-clock time
 
-        timestamp = datetime.now()
-        cap_id = f"AUTO-{self._capture_count:04d}"
-        date_str = timestamp.strftime("%Y%m%d_%H%M%S")
+        # Geotag: query drone_bridge for interpolated GPS at this exact moment
+        geo = self._geotag_query(capture_sys_t)
+
+        timestamp = datetime.now(timezone.utc)
+        cap_id    = f"AUTO-{self._capture_count:04d}"
+        date_str  = timestamp.strftime("%Y%m%d_%H%M%S")
         base_name = f"{cap_id}_{date_str}"
 
         capture_info = {
-            "id": cap_id,
-            "timestamp": timestamp.isoformat(),
-            "capture_number": self._capture_count,
-            "detections": [],
-            "images": {},
+            "id":              cap_id,
+            "timestamp":       timestamp.isoformat(),
+            "capture_number":  self._capture_count,
+            # GPS geo-tag (interpolated from telemetry buffer)
+            "geotag": {
+                "lat":                  geo.get("lat"),
+                "lon":                  geo.get("lon"),
+                "alt_msl":              geo.get("alt_msl"),
+                "alt_agl":              geo.get("alt_agl"),
+                "heading":              geo.get("heading"),
+                "roll":                 geo.get("roll"),
+                "pitch":                geo.get("pitch"),
+                "ground_speed":         geo.get("ground_speed"),
+                "capture_sys_time_utc": geo.get("capture_system_time_utc"),
+                "capture_gps_time_utc": geo.get("capture_gps_time_utc"),
+                "sync_offset_sec":      geo.get("sync_offset_sec"),
+                "interp_frac":          geo.get("interp_frac"),
+                "status":               geo.get("status", "unavailable"),
+            },
+            "detections":   [],
+            "images":       {},
         }
 
         if self.save_images:

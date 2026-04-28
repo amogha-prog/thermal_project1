@@ -64,6 +64,7 @@ class ThermalPipeline:
         detection_threshold: float = 35.0,
         auto_capture_severity: str = "WARNING",
         simulation: bool = False,
+        **kwargs
     ):
         self.backend_host = backend_host
         self.backend_port = backend_port
@@ -84,14 +85,15 @@ class ThermalPipeline:
 
         self.detector = HotspotDetector(
             threshold_temp=detection_threshold,
+            palette=kwargs.get("palette", "white-hot"),
             yolo_model_path=yolo_model,
         )
 
         self.classifier = ThermalClassifier()
 
         self.fp_filter = FalsePositiveFilter(
-            min_persistence_frames=3,
-            min_persistence_time=0.5,
+            min_persistence_frames=1,
+            min_persistence_time=0.0,
         )
 
         self.auto_capture = AutoCapture(
@@ -299,6 +301,9 @@ def main():
                         help="Auto-capture severity trigger level")
     parser.add_argument("--simulation", action="store_true",
                         help="Run with simulated thermal data (no camera needed)")
+    parser.add_argument("--palette", default="white-hot",
+                        choices=["white-hot", "black-hot"],
+                        help="Thermal palette (white-hot or black-hot)")
 
     args = parser.parse_args()
 
@@ -318,6 +323,7 @@ def main():
         detection_threshold=args.threshold,
         auto_capture_severity=args.auto_capture,
         simulation=args.simulation,
+        palette=args.palette,
     )
 
     # Graceful shutdown on Ctrl+C

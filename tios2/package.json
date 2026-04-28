@@ -4,11 +4,13 @@
   "description": "Thermal Inspection Operating System - No Database Edition",
   "scripts": {
     "install:all": "cd backend && npm install && cd ../frontend && npm install",
-    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev": "concurrently -n \"FE,BE,BRG,PIPE\" -c \"cyan,green,yellow,magenta\" \"npm run dev:frontend\" \"npm run dev:backend\" \"python backend/drone_bridge.py\" \"python backend/python/main.py --simulation\"",
     "dev:backend": "cd backend && npm run dev",
     "dev:frontend": "cd frontend && npm run dev",
+    "dev:pipeline": "python backend/python/main.py",
+    "dev:bridge": "python backend/drone_bridge.py",
     "build": "cd frontend && npm run build",
-    "start": "cd backend && npm start"
+    "start": "npm run dev"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
