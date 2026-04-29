@@ -66,6 +66,8 @@ class AutoCapture:
         self._last_capture_time = 0.0
         self._session_start = datetime.now()
         self._socket: Optional[socket.socket] = None
+        self._geotag_socket: Optional[socket.socket] = None
+        self.geotag_addr = ("127.0.0.1", 14557)
 
         # Severity ordering for comparisons
         self._severity_rank = {
@@ -85,7 +87,7 @@ class AutoCapture:
         if self._capture_count >= self.max_captures:
             return False
 
-        now = time.time()
+        now = time.monotonic()
         if now - self._last_capture_time < self.cooldown_seconds:
             return False
 
@@ -109,7 +111,9 @@ class AutoCapture:
     ) -> dict:
         """Save capture frames and metadata to disk."""
         self._capture_count += 1
-        self._last_capture_time = time.time()
+        mono_now = time.monotonic()
+        wall_now = time.time()
+        self._last_capture_time = mono_now
 
         timestamp = datetime.now()
         cap_id = f"AUTO-{self._capture_count:04d}"
@@ -122,6 +126,7 @@ class AutoCapture:
             "capture_number": self._capture_count,
             "detections": [],
             "images": {},
+            "geotag": self._query_geotag(wall_now)
         }
 
         if self.save_images:
@@ -150,6 +155,21 @@ class AutoCapture:
                 json.dump(capture_info, f, indent=2, default=str)
 
         return capture_info
+
+    def _query_geotag(self, sys_t: float) -> dict:
+        """Query the drone_bridge for interpolated telemetry at capture time."""
+        if not self._geotag_socket:
+            self._geotag_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._geotag_socket.settimeout(0.2)
+        
+        try:
+            query = {"type": "geotag_query", "sys_t": sys_t}
+            self._geotag_socket.sendto(json.dumps(query).encode(), self.geotag_addr)
+            data, _ = self._geotag_socket.recvfrom(2048)
+            return json.loads(data.decode())
+        except Exception as e:
+            logger.warning(f"[AutoCapture] Geotag query failed: {e}")
+            return {"status": "error", "message": str(e)}
 
     def _notify_backend(self, capture_info: dict):
         """Send capture event to Node.js backend via UDP."""
