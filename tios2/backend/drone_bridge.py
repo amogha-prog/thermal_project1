@@ -223,17 +223,12 @@ time_sync = TimeSync()
 
 
 # ── Capture geo-tagger ────────────────────────────────────────────────────────
-def geotagged_capture(capture_sys_t: float) -> dict:
+def geotagged_capture(mono_t: float) -> dict:
     """
-    Given the system time of a capture event, return interpolated
+    Given the monotonic time of a capture event, return interpolated
     GPS location data.
-
-    Steps:
-      1. Convert capture system time -> GPS time using time_sync.
-      2. Interpolate telemetry buffer at that GPS time.
-      3. Return merged result.
     """
-    capture_gps_t = time_sync.wall_to_gps(capture_sys_t)
+    capture_gps_t = time_sync.mono_to_gps(mono_t)
 
     # Try interpolation first
     interp = tel_buffer.interpolate(capture_gps_t)
@@ -241,12 +236,12 @@ def geotagged_capture(capture_sys_t: float) -> dict:
         # Fallback to nearest sample
         interp = tel_buffer.nearest(capture_gps_t)
 
-    capture_dt = datetime.fromtimestamp(capture_sys_t, timezone.utc)
+    # For display/logging purposes only
+    capture_dt = datetime.fromtimestamp(time.time(), timezone.utc)
     gps_dt     = datetime.fromtimestamp(capture_gps_t, timezone.utc)
 
     return {
-        'capture_system_time_utc': capture_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
-        'capture_system_time_ist': (capture_dt + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+        'capture_monotonic_t':     round(mono_t, 4),
         'capture_gps_time_utc':    gps_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
         'capture_gps_time_ist':    (gps_dt + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
         'sync_offset_sec':         round(time_sync.offset or 0, 4),
@@ -279,8 +274,15 @@ def geotag_query_server():
             data, addr = sock.recvfrom(256)
             req = json.loads(data.decode())
             if req.get('type') == 'geotag_query':
-                sys_t  = float(req['sys_t'])
-                result = geotagged_capture(sys_t)
+                # Use monotonic time if provided (highly recommended)
+                if 'mono_t' in req:
+                    mono_t = float(req['mono_t'])
+                else:
+                    # Fallback to wall time if needed
+                    wall_t = float(req.get('sys_t', time.time()))
+                    mono_t = time.monotonic() - (time.time() - wall_t)
+                
+                result = geotagged_capture(mono_t)
                 if result:
                     result['status'] = 'ok'
                 else:
@@ -476,11 +478,12 @@ def run():
                         gps_val = msg.time_unix_usec / 1e6
                         boot_val = msg.time_boot_ms
                         # Update sync between Ground Monotonic and Drone GPS
-                        time_sync.update(gps_val, mono_now, boot_val)
+                        # Compensation for link latency (~100ms average)
+                        LATENCY_EST = 0.100 
+                        time_sync.update(gps_val, mono_now - LATENCY_EST, boot_val)
 
-                        # GPS time display
-                        calc_gps_t = time_sync.gps_now()
-                        tel["time_sync_error_sec"] = round(time.time() - calc_gps_t, 6)
+                        # Stability metrics
+                        tel["time_sync_error_sec"] = math.sqrt(time_sync._offset_var) # RMSE estimate
 
                         gps_dt = datetime.fromtimestamp(calc_gps_t, timezone.utc)
                         tel["gps_datetime_utc"] = gps_dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -492,11 +495,11 @@ def run():
                     send_telemetry(tel)
                     last_send = now
                     if packets % 100 == 0:
-                        sync = tel.get('time_sync_error_sec', 0) or 0
+                        sync_ms = tel.get('time_sync_error_sec', 0) or 0
                         print(f"[{ts()}] OK | mode={tel['mode']} armed={tel['armed']} "
                               f"lat={tel['lat']:.5f} lon={tel['lon']:.5f} "
                               f"agl={tel['alt_agl']:.1f}m spd={tel['ground_speed']:.1f}m/s "
-                              f"bat={tel['battery_voltage']:.1f}V sync={sync*1000:.0f}ms")
+                              f"bat={tel['battery_voltage']:.1f}V jitter={sync_ms*1000:.1f}ms")
 
             except KeyboardInterrupt:
                 print(f"\n[{ts()}] Stopped.")

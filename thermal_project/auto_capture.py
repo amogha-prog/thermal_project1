@@ -126,7 +126,7 @@ class AutoCapture:
             "capture_number": self._capture_count,
             "detections": [],
             "images": {},
-            "geotag": self._query_geotag(wall_now)
+            "geotag": self._query_geotag(mono_now)
         }
 
         if self.save_images:
@@ -156,14 +156,14 @@ class AutoCapture:
 
         return capture_info
 
-    def _query_geotag(self, sys_t: float) -> dict:
+    def _query_geotag(self, mono_t: float) -> dict:
         """Query the drone_bridge for interpolated telemetry at capture time."""
         if not self._geotag_socket:
             self._geotag_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._geotag_socket.settimeout(0.2)
         
         try:
-            query = {"type": "geotag_query", "sys_t": sys_t}
+            query = {"type": "geotag_query", "mono_t": mono_t}
             self._geotag_socket.sendto(json.dumps(query).encode(), self.geotag_addr)
             data, _ = self._geotag_socket.recvfrom(2048)
             return json.loads(data.decode())
