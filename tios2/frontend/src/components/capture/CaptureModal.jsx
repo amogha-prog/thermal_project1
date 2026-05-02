@@ -33,6 +33,14 @@ export default function CaptureModal({ captureId, onClose }) {
           <div className="flex items-center gap-3">
             <span className="font-mono text-sm text-accent font-bold">{cap.id}</span>
             <span className="font-mono text-xs text-muted">{cap.dateStr} · {cap.timeStr} IST</span>
+            {/* Time source badge: GPS = green, system fallback = amber */}
+            <span className={`font-mono text-[9px] px-1.5 py-0.5 rounded-sm font-bold tracking-wider border ${
+              cap.timeSource === 'gps'
+                ? 'bg-green-900/40 text-green-400 border-green-500/30'
+                : 'bg-amber-900/40 text-amber-400 border-amber-500/30'
+            }`}>
+              {cap.timeSource === 'gps' ? '⏱ GPS TIME' : '⚠ SYS TIME'}
+            </span>
             <span className={`font-mono text-[10px] px-2 py-0.5 rounded-sm ${cap.telemetry?.armed ? 'bg-thermal/20 text-thermal' : 'bg-dim text-muted'}`}>
               {cap.telemetry?.armed ? 'ARMED' : 'DISARMED'}
             </span>

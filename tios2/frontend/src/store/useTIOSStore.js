@@ -102,7 +102,7 @@ export const useTIOSStore = create((set, get) => ({
 
   // ── UI state ──────────────────────────────────────────────────────────────
   activeTab: 'dashboard', // 'dashboard' or 'map'
-  videoMode:       'demo', // 'demo' | 'webcam' | 'live'
+  videoMode:       'webcam', // 'webcam' | 'live'
   feedsSwapped:    false,
   selectedCapture: null,
   setActiveTab: (tab) => set({ activeTab: tab }),

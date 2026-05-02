@@ -5,7 +5,7 @@
  * LIVE mode : webcam + thermal palette + auto-range + hot-spot tracking
  *
  * Temperature: fully auto-ranged per frame (no fixed limits)
- * Palettes   : Ironbow | Rainbow | Inferno | Lava | Blue (brand)
+ * Palettes   : Black Hot | White Hot
  */
 
 import React, { useEffect, useRef, useState, forwardRef, useCallback } from 'react';
@@ -30,45 +30,13 @@ function buildLUT(stops) {
 }
 
 const PALETTES = {
-  whitehot: {
-    name: 'White Hot', label: 'W-HT', accent: '#ffffff',
-    lut: buildLUT([[0, 0, 0, 0], [1.0, 255, 255, 255]]),
-  },
   blackhot: {
     name: 'Black Hot', label: 'B-HT', accent: '#555555',
     lut: buildLUT([[0, 255, 255, 255], [1.0, 0, 0, 0]]),
   },
-  ironbow: {
-    name: 'Ironbow', label: 'IRON', accent: '#ff8c42',
-    lut: buildLUT([
-      [0,   5,   0,   45 ], [0.15, 60,  0,   140], [0.35, 180, 10,  120],
-      [0.55, 235, 30,  10 ], [0.80, 255, 160, 0  ], [1.0,  255, 255, 220],
-    ]),
-  },
-  rainbow: {
-    name: 'Rainbow', label: 'RNBW', accent: '#00e5ff',
-    lut: buildLUT([
-      [0,    0,   0,   255], [0.25, 0,   255, 255], [0.50, 0,   255, 0  ],
-      [0.75, 255, 255, 0  ], [1.0,  255, 0,   0  ],
-    ]),
-  },
-  lava: {
-    name: 'Lava', label: 'LAVA', accent: '#ffcc00',
-    lut: buildLUT([
-      [0,    0,   0,   0  ], [0.25, 80,  0,   0  ], [0.55, 225, 20,  0  ],
-      [0.82, 255, 160, 0  ], [1.0,  255, 255, 180],
-    ]),
-  },
-  arctic: {
-    name: 'Arctic', label: 'ARCT', accent: '#00d4ff',
-    lut: buildLUT([
-      [0,    255, 255, 255], [0.22, 0,   255, 255], [0.48, 0,   110, 255],
-      [0.78, 140, 0,   255], [1.0,  10,  0,   25],
-    ]),
-  },
-  brand: {
-    name: 'Blue', label: 'BLUE', accent: '#4B6FBF',
-    lut: buildLUT([[0, 238, 245, 255], [0.5, 75, 111, 191], [1.0, 8, 31, 96]]),
+  whitehot: {
+    name: 'White Hot', label: 'W-HT', accent: '#ffffff',
+    lut: buildLUT([[0, 0, 0, 0], [1.0, 255, 255, 255]]),
   },
 };
 

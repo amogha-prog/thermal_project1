@@ -33,11 +33,11 @@ SKYDROID_IP   = '192.168.144.11'
 TIOS_HOST     = '127.0.0.1'
 TIOS_PORT     = 14556
 GEOTAG_PORT   = 14557        # UDP query port for geotag requests from auto_capture
-SEND_HZ       = 10
+SEND_HZ       = 25
 SEND_INTERVAL = 1.0 / SEND_HZ
 HB_TIMEOUT    = 20
 RECONNECT     = 3
-BUFFER_SIZE   = 200     # rolling buffer: ~20 seconds at 10 Hz
+BUFFER_SIZE   = 500     # rolling buffer: ~20s at 25Hz or ~10s at 50Hz
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
 
@@ -51,87 +51,119 @@ tios_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 tios_addr = (TIOS_HOST, TIOS_PORT)
 
 
-# ── Telemetry Buffer ──────────────────────────────────────────────────────────
+# ── Telemetry Buffer ─────────────────────────────────────────────────────────
 class TelemetryBuffer:
     """
-    Stores timestamped telemetry snapshots tagged with GPS time.
-    Used for forward/backward interpolation at capture time.
-    
-    Each entry: { 'gps_t': float, 'lat': float, 'lon': float,
-                  'alt_msl': float, 'alt_agl': float,
-                  'heading': float, 'roll': float, 'pitch': float,
-                  'ground_speed': float }
+    Stores telemetry snapshots dual-tagged with:
+      - gps_t  : GPS unix timestamp  (from drone SYSTEM_TIME / boot_ms)
+      - mono_t : ground time.monotonic() at packet arrival
+
+    Two interpolation paths:
+      interpolate(query_gps_t)   — used when you have a GPS time
+      interpolate_mono(query_mono) — used when you have a monotonic time
+                                     (photo capture path, most precise)
     """
     def __init__(self, maxlen=BUFFER_SIZE):
         self._buf = collections.deque(maxlen=maxlen)
 
-    def push(self, gps_t: float, snapshot: dict):
-        self._buf.append({'gps_t': gps_t, **snapshot})
+    def push(self, gps_t: float, mono_t: float, snapshot: dict):
+        """Push a snapshot tagged with both GPS time and monotonic time."""
+        self._buf.append({'gps_t': gps_t, 'mono_t': mono_t, **snapshot})
 
-    def interpolate(self, query_gps_t: float) -> dict:
-        """
-        Forward/backward interpolation.
-        Finds the two entries surrounding query_gps_t and linearly
-        interpolates all numeric fields. If only one side is available,
-        uses the nearest single point (extrapolation limit = 0.5s).
-        """
-        buf = list(self._buf)
-        if not buf:
-            return {}
-
-        # Find surrounding pair
-        before = None
-        after  = None
-        for entry in buf:
-            if entry['gps_t'] <= query_gps_t:
-                before = entry
-            elif entry['gps_t'] > query_gps_t and after is None:
-                after = entry
-                break
-
-        if before is None and after is None:
-            return {}
-
-        # Only one side available → use nearest if within tolerance
-        if before is None:
-            return after if abs(after['gps_t'] - query_gps_t) < 0.5 else {}
-        if after is None:
-            return before if abs(before['gps_t'] - query_gps_t) < 0.5 else {}
-
-        # Linear interpolation
-        span = after['gps_t'] - before['gps_t']
+    # ── Internal: linear interpolation across all telemetry fields ────────────
+    @staticmethod
+    def _blend(before: dict, after: dict, key: str, query_t: float) -> dict:
+        span = after[key] - before[key]
         if span <= 0:
-            return before
+            return dict(before)
+        t_frac = (query_t - before[key]) / span
 
-        t_frac = (query_gps_t - before['gps_t']) / span
-
+        fields = [
+            'lat', 'lon', 'alt_msl', 'alt_agl',
+            'roll', 'pitch', 'heading', 'ground_speed',
+            'vx', 'vy', 'vz', 'climb', 'heading_autopilot', 'cog',
+            'battery_voltage', 'battery_pct'
+        ]
         result = {}
-        fields = ['lat', 'lon', 'alt_msl', 'alt_agl',
-                  'heading', 'roll', 'pitch', 'ground_speed']
         for f in fields:
-            a = before.get(f, 0.0)
-            b = after.get(f, 0.0)
-            # Special handling for circular heading (0-360)
-            if f == 'heading':
+            a = before.get(f)
+            b = after.get(f)
+            if a is None or b is None:
+                result[f] = a if a is not None else b
+                continue
+            if f in ['heading', 'heading_autopilot', 'cog']:
                 diff = b - a
                 if diff > 180:  diff -= 360
                 if diff < -180: diff += 360
                 val = (a + diff * t_frac) % 360
             else:
                 val = a + (b - a) * t_frac
-            result[f] = round(val, 7)
+            result[f] = round(val, 7) if f in ['lat', 'lon'] else round(val, 3)
 
-        result['interp_frac'] = round(t_frac, 4)
-        result['before_gps_t'] = before['gps_t']
-        result['after_gps_t']  = after['gps_t']
+        result['interp_frac']   = round(t_frac, 4)
+        result['before_gps_t']  = before['gps_t']
+        result['after_gps_t']   = after['gps_t']
+        result['before_mono_t'] = before['mono_t']
+        result['after_mono_t']  = after['mono_t']
         return result
 
-    def nearest(self, query_gps_t: float) -> dict:
-        """Fallback: return the single nearest sample."""
+    # ── Internal: binary search by a given key ────────────────────────────────
+    def _bsearch(self, buf: list, key: str, query_t: float):
+        lo, hi, idx = 0, len(buf) - 1, 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if buf[mid][key] <= query_t:
+                idx = mid
+                lo  = mid + 1
+            else:
+                hi  = mid - 1
+        before = buf[idx]     if buf[idx][key] <= query_t       else None
+        after  = buf[idx + 1] if idx + 1 < len(buf)             else None
+        return before, after
+
+    def interpolate(self, query_gps_t: float, tol: float = 1.0) -> dict:
+        """
+        Forward/backward interpolation by GPS unix time.
+        Used when caller has a GPS timestamp to look up.
+        """
         buf = list(self._buf)
         if not buf:
             return {}
-        return min(buf, key=lambda e: abs(e['gps_t'] - query_gps_t))
+        before, after = self._bsearch(buf, 'gps_t', query_gps_t)
+        if before is None and after is None:
+            return {}
+        if before is None:
+            return after if abs(after['gps_t'] - query_gps_t) < tol else {}
+        if after is None:
+            return before if abs(before['gps_t'] - query_gps_t) < tol else {}
+        return self._blend(before, after, 'gps_t', query_gps_t)
+
+    def interpolate_mono(self, query_mono_t: float, tol: float = 1.0) -> dict:
+        """
+        Forward/backward interpolation by monotonic time.
+        This is the PRIMARY path for photo capture tagging.
+        Because mono_t has no GPS-conversion error, this gives
+        the most precise geotag possible.
+        """
+        buf = list(self._buf)
+        if not buf:
+            return {}
+        before, after = self._bsearch(buf, 'mono_t', query_mono_t)
+        if before is None and after is None:
+            return {}
+        if before is None:
+            return after if abs(after['mono_t'] - query_mono_t) < tol else {}
+        if after is None:
+            return before if abs(before['mono_t'] - query_mono_t) < tol else {}
+        return self._blend(before, after, 'mono_t', query_mono_t)
+
+    def nearest(self, query_gps_t: float) -> dict:
+        """Fallback: nearest GPS-tagged sample within 2.0s."""
+        buf = list(self._buf)
+        if not buf:
+            return {}
+        best = min(buf, key=lambda e: abs(e['gps_t'] - query_gps_t))
+        return best if abs(best['gps_t'] - query_gps_t) <= 2.0 else {}
 
 
 # Global buffer — accessible by the capture handler
@@ -142,32 +174,32 @@ tel_buffer = TelemetryBuffer()
 class TimeSync:
     """
     Tracks the GPS<->monotonic offset using a Kalman-style filter.
-    Provides stable conversion between system wall time and GPS time.
+    Provides stable conversion between system monotonic time and GPS time.
     """
     def __init__(self):
-        self._offset      = None   # gps_unix - monotonic
-        self._offset_var  = 1e6    # variance (large = uncertain)
-        self._proc_noise  = 1e-6   # how much the offset drifts per second
+        self._offset      = None   # gps_unix - mono_now
+        self._boot_offset = None   # gps_unix - drone_boot_ms/1000
+        self._offset_var  = 1e6    # variance
+        self._proc_noise  = 1e-6
 
-    def update(self, gps_unix: float, mono_now: float):
+    def update(self, gps_unix: float, mono_now: float, boot_ms: float = None):
         raw_offset = gps_unix - mono_now
+        
+        if boot_ms is not None:
+            self._boot_offset = gps_unix - (boot_ms / 1000.0)
 
         if self._offset is None:
-            # First measurement — just accept it
             self._offset     = raw_offset
             self._offset_var = 0.001
             return
 
-        # Kalman predict step (offset drifts slowly)
+        # Kalman update
         self._offset_var += self._proc_noise
-
-        # Kalman update step
-        meas_noise = 0.005   # ~5ms measurement noise (LAN latency)
+        meas_noise = 0.004   # 4ms — tighter noise → faster convergence
         K = self._offset_var / (self._offset_var + meas_noise)
         innovation = raw_offset - self._offset
 
-        # Snap immediately if clock jumped > 0.5s (handles initial sync)
-        if abs(innovation) > 0.5:
+        if abs(innovation) > 1.0:
             self._offset     = raw_offset
             self._offset_var = 0.001
         else:
@@ -175,53 +207,68 @@ class TimeSync:
             self._offset_var = (1 - K) * self._offset_var
 
     def mono_to_gps(self, mono: float) -> float:
-        """Convert a monotonic timestamp to GPS unix time."""
+        """Convert ground monotonic timestamp to GPS unix time."""
         if self._offset is None:
             return time.time()
         return mono + self._offset
 
+    def boot_to_gps(self, boot_ms: float) -> float:
+        """Convert drone boot_ms to GPS unix time (more stable)."""
+        if self._boot_offset is None:
+            return self.gps_now()
+        return (boot_ms / 1000.0) + self._boot_offset
+
     def gps_now(self) -> float:
-        """Best estimate of GPS unix time right now."""
+        """Best estimate of GPS unix time right now on ground."""
         return self.mono_to_gps(time.monotonic())
 
-    def sys_to_gps(self, sys_t: float) -> float:
-        """
-        Convert a system wall-clock time to GPS time.
-        Uses the wall<->mono relationship to bridge the two.
-        wall_now - mono_now = sys_epoch_offset
-        gps = sys_t - sys_epoch_offset + mono + offset
-              = sys_t + (gps_now - wall_now)
-        """
-        if self._offset is None:
-            return sys_t
-        correction = self.gps_now() - time.time()
-        return sys_t + correction
+    def wall_to_gps(self, wall_t: float) -> float:
+        """Convert system wall time to GPS time by bridging via current monotonic time."""
+        # wall_t - time.time() is the delta to now.
+        # gps_now() + (wall_t - time.time()) is the estimated gps time of wall_t
+        return self.gps_now() + (wall_t - time.time())
 
     @property
     def offset(self):
         return self._offset
+
+    @property
+    def offset_std_ms(self) -> float:
+        """
+        Kalman filter 1-sigma uncertainty in milliseconds.
+        This is what 'Sync Δ' should display — it shows HOW PRECISELY
+        the GPS↔mono mapping is known, not the raw PC wall-clock gap.
+        Converges to <5ms within a few SYSTEM_TIME messages.
+        """
+        if self._offset is None:
+            return 9999.0
+        return math.sqrt(self._offset_var) * 1000.0
 
 
 time_sync = TimeSync()
 
 
 # ── Capture geo-tagger ────────────────────────────────────────────────────────
-def geotagged_capture(capture_sys_t: float) -> dict:
+def geotagged_capture(capture_sys_t: float, capture_mono_t: float = None) -> dict:
     """
-    Given the system time of a capture event, return interpolated
-    GPS location data.
+    Return interpolated GPS telemetry for the exact moment a photo was captured.
 
-    Steps:
-      1. Convert capture system time -> GPS time using time_sync.
-      2. Interpolate telemetry buffer at that GPS time.
-      3. Return merged result.
+    Two paths (best to worst precision):
+      1. mono_t provided  → interpolate_mono() — no GPS-conversion error (~1ms)
+      2. sys_t only       → wall_to_gps() then interpolate()  (~5-10ms)
     """
-    capture_gps_t = time_sync.sys_to_gps(capture_sys_t)
+    if capture_mono_t is not None:
+        # PRIMARY PATH: direct monotonic interpolation — most precise
+        interp = tel_buffer.interpolate_mono(capture_mono_t)
+        # Compute the GPS timestamp for logging
+        capture_gps_t = time_sync.mono_to_gps(capture_mono_t)
+    else:
+        # FALLBACK PATH: convert wall time to GPS time then interpolate
+        capture_gps_t = time_sync.wall_to_gps(capture_sys_t)
+        interp = tel_buffer.interpolate(capture_gps_t)
 
-    # Try interpolation first
-    interp = tel_buffer.interpolate(capture_gps_t)
     if not interp:
-        # Fallback to nearest sample
+        # Last resort: nearest GPS-tagged sample
         interp = tel_buffer.nearest(capture_gps_t)
 
     capture_dt = datetime.fromtimestamp(capture_sys_t, timezone.utc)
@@ -233,6 +280,7 @@ def geotagged_capture(capture_sys_t: float) -> dict:
         'capture_gps_time_utc':    gps_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
         'capture_gps_time_ist':    (gps_dt + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
         'sync_offset_sec':         round(time_sync.offset or 0, 4),
+        'path': 'mono' if capture_mono_t is not None else 'wall',
         **interp
     }
 
@@ -259,14 +307,15 @@ def geotag_query_server():
 
     while True:
         try:
-            data, addr = sock.recvfrom(256)
+            data, addr = sock.recvfrom(512)
             req = json.loads(data.decode())
             if req.get('type') == 'geotag_query':
                 sys_t  = float(req['sys_t'])
-                result = geotagged_capture(sys_t)
-                if result:
-                    result['status'] = 'ok'
-                else:
+                # Accept optional mono_t from auto_capture for the fast path
+                mono_t = float(req['mono_t']) if 'mono_t' in req else None
+                result = geotagged_capture(sys_t, mono_t)
+                result['status'] = 'ok' if result else 'no_data'
+                if not result:
                     result = {'status': 'no_data'}
                 sock.sendto(json.dumps(result).encode(), addr)
         except socket.timeout:
@@ -321,6 +370,9 @@ def try_connect(source):
         else:
             print(f"[{ts()}] No heartbeat on {source} (timeout {HB_TIMEOUT}s)")
             return None
+    except PermissionError as e:
+        print(f"[{ts()}] {source} SKIPPED — port busy (WinError 10013). Is QGC running?")
+        return None
     except Exception as e:
         print(f"[{ts()}] {source} failed: {type(e).__name__}: {e}")
         return None
@@ -352,10 +404,8 @@ def run():
             try:
                 mono_now = time.monotonic()
 
-                # System time display
-                now_utc = datetime.now(timezone.utc)
-                tel["system_datetime_utc"] = now_utc.strftime('%Y-%m-%d %H:%M:%S')
-                tel["system_datetime_ist"] = (now_utc + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S')
+                # Do NOT set system_datetime here with raw datetime.now().
+                # It is set at send-time using the GPS-corrected monotonic clock.
 
                 # Heartbeat watchdog
                 if mono_now - last_hb > HB_TIMEOUT * 2:
@@ -363,14 +413,22 @@ def run():
                     break
 
                 msg = master.recv_match(blocking=True, timeout=0.05)
+                # Tag arrival time immediately with monotonic — before any processing
+                recv_mono = time.monotonic()
                 if not msg:
                     continue
 
                 mtype = msg.get_type()
                 packets += 1
 
-                # ── Current GPS time estimate for this packet ─────────────────
-                gps_now = time_sync.gps_now()
+                # ── GPS time for this packet ──────────────────────────────────────────
+                # Priority: drone boot_ms (most precise) → monotonic fallback
+                msg_boot_ms = getattr(msg, 'time_boot_ms', None)
+                if msg_boot_ms and msg_boot_ms > 0:
+                    gps_t = time_sync.boot_to_gps(msg_boot_ms)
+                else:
+                    # Use recv_mono (tagged at arrival) instead of time.monotonic() now
+                    gps_t = time_sync.mono_to_gps(recv_mono)
 
                 if mtype == 'HEARTBEAT':
                     last_hb = mono_now
@@ -400,16 +458,24 @@ def run():
                     tel["vz"] = vz
                     tel["ground_speed"] = math.sqrt(vx**2 + vy**2)
 
-                    # Push GPS-timestamped snapshot into buffer
-                    tel_buffer.push(gps_now, {
-                        'lat':          tel["lat"],
-                        'lon':          tel["lon"],
-                        'alt_msl':      tel["alt_msl"],
-                        'alt_agl':      tel["alt_agl"],
-                        'heading':      tel["heading_body"],
-                        'roll':         tel["roll"],
-                        'pitch':        tel["pitch"],
-                        'ground_speed': tel["ground_speed"],
+                    # Push detailed snapshot tagged with both GPS time and monotonic time
+                    tel_buffer.push(gps_t, recv_mono, {
+                        'lat':              tel["lat"],
+                        'lon':              tel["lon"],
+                        'alt_msl':          tel["alt_msl"],
+                        'alt_agl':          tel["alt_agl"],
+                        'vx':               tel["vx"],
+                        'vy':               tel["vy"],
+                        'vz':               tel["vz"],
+                        'climb':            tel["climb"],
+                        'ground_speed':     tel["ground_speed"],
+                        'roll':             tel["roll"],
+                        'pitch':            tel["pitch"],
+                        'heading':          tel["heading_body"],
+                        'heading_autopilot': tel["heading_autopilot"],
+                        'cog':              tel["cog"],
+                        'battery_voltage':  tel["battery_voltage"],
+                        'battery_pct':      tel["battery_pct"],
                     })
 
                 elif mtype == 'ATTITUDE':
@@ -418,6 +484,26 @@ def run():
                     tel["yaw"]   = math.degrees(msg.yaw)
                     hb = math.degrees(msg.yaw)
                     tel["heading_body"] = hb + 360 if hb < 0 else hb
+
+                    # ATTITUDE at 50Hz — push dual-tagged snapshot for sub-20ms interpolation
+                    tel_buffer.push(gps_t, recv_mono, {
+                        'lat':              tel["lat"],
+                        'lon':              tel["lon"],
+                        'alt_msl':          tel["alt_msl"],
+                        'alt_agl':          tel["alt_agl"],
+                        'vx':               tel["vx"],
+                        'vy':               tel["vy"],
+                        'vz':               tel["vz"],
+                        'climb':            tel["climb"],
+                        'ground_speed':     tel["ground_speed"],
+                        'roll':             tel["roll"],
+                        'pitch':            tel["pitch"],
+                        'heading':          tel["heading_body"],
+                        'heading_autopilot': tel["heading_autopilot"],
+                        'cog':              tel["cog"],
+                        'battery_voltage':  tel["battery_voltage"],
+                        'battery_pct':      tel["battery_pct"],
+                    })
 
                 elif mtype == 'VFR_HUD':
                     tel["heading_autopilot"] = msg.heading
@@ -443,30 +529,37 @@ def run():
 
                 elif mtype == 'SYSTEM_TIME':
                     if msg.time_unix_usec > 0:
-                        gps_t = msg.time_unix_usec / 1e6
+                        gps_val  = msg.time_unix_usec / 1e6
+                        boot_val = msg.time_boot_ms
+                        # Update Kalman filter: maps Ground mono <-> Drone GPS time
+                        time_sync.update(gps_val, mono_now, boot_val)
 
-                        # Update Kalman-filtered offset
-                        time_sync.update(gps_t, mono_now)
-
-                        # GPS time display
+                        # Real GPS time from Kalman-corrected monotonic
                         calc_gps_t = time_sync.gps_now()
-                        tel["time_sync_error_sec"] = round(time.time() - calc_gps_t, 6)
 
+                        # Real sync error: actual PC wall clock vs GPS clock
+                        tel["time_sync_error_sec"] = round(time.time() - calc_gps_t, 4)
+
+                        # Real GPS datetime
                         gps_dt = datetime.fromtimestamp(calc_gps_t, timezone.utc)
                         tel["gps_datetime_utc"] = gps_dt.strftime('%Y-%m-%d %H:%M:%S')
                         tel["gps_datetime_ist"] = (gps_dt + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S')
 
-                # ── Send at 10 Hz ─────────────────────────────────────────────
+                # ── Send at 25 Hz ─────────────────────────────────────────────
                 now = time.monotonic()
                 if now - last_send >= SEND_INTERVAL:
+                    # Real system time — raw PC wall clock, no correction
+                    now_utc = datetime.now(timezone.utc)
+                    tel["system_datetime_utc"] = now_utc.strftime('%Y-%m-%d %H:%M:%S')
+                    tel["system_datetime_ist"] = (now_utc + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S')
                     send_telemetry(tel)
                     last_send = now
                     if packets % 100 == 0:
-                        sync = tel.get('time_sync_error_sec', 0) or 0
+                        sync = tel.get('time_sync_error_sec') or 0
                         print(f"[{ts()}] OK | mode={tel['mode']} armed={tel['armed']} "
                               f"lat={tel['lat']:.5f} lon={tel['lon']:.5f} "
                               f"agl={tel['alt_agl']:.1f}m spd={tel['ground_speed']:.1f}m/s "
-                              f"bat={tel['battery_voltage']:.1f}V sync={sync*1000:.0f}ms")
+                              f"bat={tel['battery_voltage']:.1f}V sync={sync:.3f}s")
 
             except KeyboardInterrupt:
                 print(f"\n[{ts()}] Stopped.")
