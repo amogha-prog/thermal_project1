@@ -109,8 +109,9 @@ app.post('/api/report/generate', (req, res) => {
         eccentricity: 0.5,
         peak_intensity: parseFloat(cap.telemetry.maxTemp) || 0,
         mean_intensity: parseFloat(cap.telemetry.avgTemp) || 0,
-        palette: "ironbow",
-        timestamp_utc: cap.timestamp,
+        palette: "blackhot",
+        timestamp_utc: cap.timestamp,   // GPS-sourced ISO UTC timestamp
+        time_source: cap.timeSource || 'system',  // 'gps' or 'system'
         thermal_file: t_file,
         visible_file: v_file
       };

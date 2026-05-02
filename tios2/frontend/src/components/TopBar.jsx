@@ -58,7 +58,6 @@ export default function TopBar({ onCapture, onSaveImages, onGeneratePDF, onExpor
           onChange={(e) => setVideoMode(e.target.value)}
           className="px-2 sm:px-3 py-1.5 ml-0 sm:ml-2 rounded border border-white/10 bg-black/40 text-white text-[10px] sm:text-[11px] font-mono outline-none cursor-pointer hover:bg-black/60 transition-colors"
         >
-          <option value="demo">SIMULATION</option>
           <option value="webcam">WEBCAM</option>
           <option value="live">LIVE RTSP</option>
         </select>

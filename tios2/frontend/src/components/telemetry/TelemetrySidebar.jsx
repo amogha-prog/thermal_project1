@@ -3,7 +3,7 @@
  * Live telemetry cards, GPS, artificial horizon, detection alerts, capture list
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTIOSStore } from '../../store/useTIOSStore';
 
 // ── Artificial Horizon ────────────────────────────────────────────────────────
@@ -154,8 +154,69 @@ export default function TelemetrySidebar({ onSelectCapture, onShowBrowser, mobil
   const criticalCount = detections.filter(d => d.severity === 'CRITICAL').length;
   const warningCount  = detections.filter(d => d.severity === 'WARNING').length;
 
+  // ── Low battery popup ────────────────────────────────────────────────────────
+  const [showLowBatt, setShowLowBatt] = useState(false);
+  const lowBattTriggered = useRef(false);  // prevents re-firing while still low
+
+  useEffect(() => {
+    const v = parseFloat(tel.voltage || 0);
+    if (v <= 0) return;  // ignore 0 (no data yet)
+
+    if (v <= 19.0 && !lowBattTriggered.current) {
+      lowBattTriggered.current = true;
+      setShowLowBatt(true);
+      addToast('⚠ LOW BATTERY — Land immediately!', 'error');
+    }
+    // Reset trigger hysteresis once voltage rises above 20V (e.g. swapped battery)
+    if (v > 20.0) {
+      lowBattTriggered.current = false;
+    }
+  }, [tel.voltage]);
+
   return (
     <>
+      {/* ── Low Battery Warning Modal ────────────────────────────────────── */}
+      {showLowBatt && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/75 backdrop-blur-sm"
+          onClick={() => setShowLowBatt(false)}
+        >
+          <div
+            className="relative bg-[#1a0a0a] border-2 border-red-500 rounded-2xl p-8 max-w-sm w-full mx-4
+                       shadow-[0_0_60px_rgba(220,38,38,0.5)] animate-pulse"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Pulsing battery icon */}
+            <div className="flex justify-center mb-4">
+              <div className="text-red-500 text-6xl animate-bounce select-none">🔋</div>
+            </div>
+
+            <h2 className="text-center font-mono font-black text-red-400 text-2xl tracking-widest uppercase mb-2">
+              Low Battery
+            </h2>
+            <p className="text-center font-mono text-red-300/80 text-sm mb-1">
+              Battery voltage dropped to
+            </p>
+            <p className="text-center font-mono font-black text-red-300 text-3xl mb-4">
+              {parseFloat(tel.voltage || 0).toFixed(1)} V
+            </p>
+            <p className="text-center font-mono text-red-400/70 text-xs mb-6 tracking-wide uppercase">
+              Land the drone immediately!
+            </p>
+
+            <button
+              onClick={() => setShowLowBatt(false)}
+              className="w-full font-mono font-bold text-sm py-2.5 rounded-lg
+                         bg-red-600 hover:bg-red-500 text-white
+                         transition-all duration-150 active:scale-95
+                         shadow-lg shadow-red-900/50 tracking-widest uppercase"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Mobile backdrop */}
       {mobileOpen && (
         <div className="fixed inset-0 bg-black/60 z-[1100] lg:hidden" onClick={onCloseMobile} />

@@ -44,14 +44,50 @@ export function captureThumbnail(canvasRef) {
 /**
  * buildCaptureUnit — assemble the complete capture object.
  * All fields are frozen at the exact millisecond of the button press.
+ *
+ * Timestamps: GPS time from drone telemetry is used when available.
+ * Falls back to system clock only if no GPS fix exists.
  */
 export function buildCaptureUnit({ thermalFrame, rgbFrame, thermalThumb, rgbThumb, telemetry, missionId, index }) {
-  const now = new Date();
+  // ── Resolve timestamp source: prefer GPS time from drone ──────────────────
+  // telemetry.gpsDatetimeUtc is set by drone_bridge.py from SYSTEM_TIME MAVLink msg
+  const gpsUtcStr = telemetry?.gpsDatetimeUtc;   // e.g. "2026-05-02 10:13:30" (UTC)
+
+  let captureDate;
+  let timeSource; // 'gps' | 'system'
+
+  if (gpsUtcStr && gpsUtcStr.length > 0) {
+    // Parse the UTC string from the drone bridge (format: "YYYY-MM-DD HH:MM:SS")
+    const parsed = new Date(gpsUtcStr.replace(' ', 'T') + 'Z');
+    if (!isNaN(parsed.getTime())) {
+      captureDate = parsed;
+      timeSource  = 'gps';
+    }
+  }
+
+  if (!captureDate) {
+    // No GPS time — fall back to system clock
+    captureDate = new Date();
+    timeSource  = 'system';
+  }
+
+  // Format IST display string (UTC+5:30)
+  const istFormatter = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour:   '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+  const istDateFormatter = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit', month: 'short', year: 'numeric',
+  });
+
   return {
     id:        `CAP-${String(index).padStart(3, '0')}`,
-    timestamp: now.toISOString(),
-    timeStr:   now.toTimeString().slice(0, 8),
-    dateStr:   now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+    timestamp: captureDate.toISOString(),           // always UTC ISO
+    timeStr:   istFormatter.format(captureDate),    // IST HH:MM:SS for display
+    dateStr:   istDateFormatter.format(captureDate),// IST date for display
+    timeSource,                                     // 'gps' or 'system' — shown in UI/PDF
     missionId,
 
     // GPS + flight data frozen at capture moment

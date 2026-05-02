@@ -72,6 +72,8 @@ STYLES = {
                      borderPadding=(2,6,2,6), leading=13),
     "body"       : S("body",    fontName="Helvetica",      fontSize=9,
                      textColor=C_DARK,   leading=13),
+    "map_link"   : S("maplnk",  fontName="Helvetica-Bold", fontSize=9,
+                     textColor=C_MID,    leading=13),
 }
 
 # ── Canvas callbacks ──────────────────────────────────────────────────────────
@@ -613,12 +615,22 @@ def capture_card(story, meta, idx):
     usable_w = PAGE_W - 2*MARGIN
 
     # ── card header bar ───────────────────────────────────────────────────────
+    time_source = meta.get("time_source", "system")
+    ts_color    = C_SUCCESS if time_source == "gps" else C_WARN
+    ts_label    = "⏱ GPS" if time_source == "gps" else "⚠ SYS"
+
+    ts_text = (
+        f'{fmt_ts(meta.get("timestamp_utc", ""))} '
+        f'<font color="{"#10B981" if time_source == "gps" else "#F59E0B"}">'
+        f'[{ts_label}]</font>'
+    )
+
     header_data = [[
         Paragraph(f"Detection #{idx:02d}", S("dh",
             fontName="Helvetica-Bold", fontSize=10, textColor=C_WHITE)),
         Paragraph(label.upper(), S("dl",
             fontName="Helvetica-Bold", fontSize=10, textColor=tc)),
-        Paragraph(fmt_ts(meta.get("timestamp_utc","")), S("dt",
+        Paragraph(ts_text, S("dt",
             fontName="Helvetica", fontSize=9, textColor=C_PALE,
             alignment=TA_RIGHT)),
     ]]
@@ -705,14 +717,26 @@ def capture_card(story, meta, idx):
          Paragraph(meta.get("palette", "—").title(), STYLES["value"])],
     ]
 
+    # ── Build Google Maps link for this capture ───────────────────────────────
+    lat_val = gps.get("lat")
+    lon_val = gps.get("lon")
+    if lat_val and lon_val:
+        maps_url  = f"https://www.google.com/maps?q={lat_val:.6f},{lon_val:.6f}&z=18"
+        maps_cell = Paragraph(
+            f'<a href="{maps_url}" color="#0EA5E9"><b>&#128205; View on Google Maps →</b></a>',
+            STYLES["map_link"]
+        )
+    else:
+        maps_cell = Paragraph("No GPS fix", STYLES["small"])
+
     gps_data = [
-        [Paragraph("GPS & FLIGHT DATA", S("ph2", fontName="Helvetica-Bold",
+        [Paragraph("GPS &amp; FLIGHT DATA", S("ph2", fontName="Helvetica-Bold",
                    fontSize=8, textColor=C_WHITE)), ""],
         [Paragraph("Latitude",   STYLES["label"]),
-         Paragraph(f"{gps.get('lat', 'N/A'):.6f}°" if gps.get('lat') else "N/A",
+         Paragraph(f"{lat_val:.6f}°" if lat_val else "N/A",
                    STYLES["value"])],
         [Paragraph("Longitude",  STYLES["label"]),
-         Paragraph(f"{gps.get('lon', 'N/A'):.6f}°" if gps.get('lon') else "N/A",
+         Paragraph(f"{lon_val:.6f}°" if lon_val else "N/A",
                    STYLES["value"])],
         [Paragraph("Altitude (AGL)", STYLES["label"]),
          Paragraph(f"{gps.get('rel_alt_m', 0):.1f} m", STYLES["value"])],
@@ -727,6 +751,9 @@ def capture_card(story, meta, idx):
                    STYLES["value"])],
         [Paragraph("Yaw",        STYLES["label"]),
          Paragraph(f"{gps.get('yaw_deg', 0):.1f}°",    STYLES["value"])],
+        # ── Google Maps clickable link row ────────────────────────────────────
+        [Paragraph("Location Link", STYLES["label"]),
+         maps_cell],
     ]
 
     panel_w = (usable_w - 4) / 2
@@ -752,6 +779,7 @@ def capture_card(story, meta, idx):
             ("BACKGROUND",    (0,4), (-1,4), C_WHITE),
             ("BACKGROUND",    (0,6), (-1,6), C_WHITE),
             ("BACKGROUND",    (0,8), (-1,8), C_WHITE),
+            ("BACKGROUND",    (0,10),(-1,10),C_WHITE),
             ("GRID",          (0,1), (-1,-1), 0.2, C_LGRAY),
             ("LINEABOVE",     (0,0), (-1,0),  0.5, header_col),
             ("LINEBELOW",     (0,-1),(-1,-1), 0.5, C_MID),
