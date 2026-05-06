@@ -57,9 +57,11 @@ python wake_drone.py
 | 📡 **Telemetry Dashboard** | Real-time GPS, altitude, speed, battery via MAVLink |
 | 📸 **Auto-Capture** | Intelligent frame capture based on detection confidence |
 | 🗺️ **Interactive Map** | Leaflet map with real-time drone positioning and capture pins |
-| 📄 **Automated PDF** | Professional inspection reports with thermal overlays and GPS metadata |
+| 📄 **Premium PDF Reports** | Auto-generated professional inspection reports with thermal overlays, dual-column GPS layouts, and Google Maps links |
+| 📊 **Geotagged CSV Export** | Export mission logs to CSV with clickable location links |
+| ⏱️ **Sub-100ms Geotagging** | High-precision hardware monotonic clock interpolation matching MAVLink and UI captures |
 | 🤖 **YOLO11 Detection** | State-of-the-art human/vehicle detection for thermal streams |
-| 🛠️ **Telemetry Tools** | Built-in scripts for waking drone streams and debugging UDP packets |
+| 🛠️ **Robust Telemetry Bridge** | Fault-tolerant bridge script (`drone_bridge.py`) that handles malformed packets and battery array disconnects |
 
 ---
 
