@@ -27,13 +27,12 @@ export default function TopBar({ onCapture, onSaveImages, onGeneratePDF, onExpor
       {/* Left Group */}
       <div className="flex items-center gap-2 md:gap-4 w-full md:w-auto justify-between md:justify-start">
         {/* Logo */}
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 flex-shrink-0 rounded bg-gradient-to-br from-accent to-blue-600 flex items-center justify-center shadow-glow">
-            <div className="w-2.5 h-2.5 bg-bg rounded-sm" />
-          </div>
-          <span className="font-mono text-[14px] md:text-[16px] font-bold tracking-[2px] md:tracking-[4px] text-white">
-            TI<span className="text-thermal">OS</span>
-          </span>
+        <div className="flex items-center gap-3">
+          <img 
+            src="/logo.jpeg" 
+            alt="Aeroluna Logo" 
+            className="h-10 w-auto object-contain" 
+          />
         </div>
 
         <div className="w-px h-6 bg-white/10 hidden md:block" />

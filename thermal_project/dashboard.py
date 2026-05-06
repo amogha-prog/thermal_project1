@@ -1,187 +1,119 @@
-"""
-TIOS Dashboard — Python Pipeline Status Dashboard
-
-Provides a minimal CLI/logging dashboard for the Python thermal analysis pipeline.
-Sends real-time pipeline status and detection summaries to the Node.js backend
-via UDP, where the web dashboard displays them.
-
-This module is NOT a web server — the React frontend in tios2/frontend is the
-primary dashboard. This module reports Python-side status to it.
-
-Usage:
-    dashboard = PipelineDashboard()
-    dashboard.update(detections, frame_stats, pipeline_status)
-"""
-
-import json
-import time
-import socket
-import logging
+import os, json, glob, threading
+from flask import Flask, render_template_string, jsonify, send_file
 from datetime import datetime
-from typing import Optional, Dict, List
-from collections import deque
 
-logger = logging.getLogger(__name__)
+# Install: pip install flask
+# Run:     python dashboard.py
+# Open:    http://localhost:5000  on any browser on the same network
 
+CAPTURES_DIR = "captures"
+app          = Flask(__name__)
 
-class PipelineDashboard:
-    """
-    Reports Python pipeline status to the Node.js backend.
-    
-    Sends periodic updates containing:
-    - Pipeline health (running, fps, uptime)
-    - Detection summary (counts, hottest temp, severity breakdown)
-    - Frame processing stats
-    - Auto-capture status
-    """
+HTML = """
+<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<title>C12 Thermal Detection Dashboard</title>
+<meta http-equiv="refresh" content="4">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif;background:#0f0f0f;color:#e0e0e0;padding:1rem}
+  h1{font-size:18px;font-weight:500;margin-bottom:1rem;color:#fff}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1.5rem}
+  .stat{background:#1a1a1a;border:0.5px solid #2a2a2a;border-radius:10px;padding:12px 16px}
+  .stat-label{font-size:11px;color:#888;margin-bottom:4px}
+  .stat-val{font-size:22px;font-weight:500;color:#fff}
+  .stat-val.human{color:#4ade80}.stat-val.animal{color:#facc15}.stat-val.vehicle{color:#60a5fa}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+  .card{background:#1a1a1a;border:0.5px solid #2a2a2a;border-radius:10px;overflow:hidden}
+  .card img{width:100%;display:block;aspect-ratio:4/3;object-fit:cover}
+  .card-body{padding:10px 12px}
+  .card-label{font-size:13px;font-weight:500;margin-bottom:4px}
+  .card-label.human{color:#4ade80}.card-label.animal{color:#facc15}.card-label.vehicle{color:#60a5fa}
+  .card-meta{font-size:11px;color:#666;line-height:1.6}
+  .conf{display:inline-block;font-size:10px;padding:1px 7px;border-radius:4px;background:#2a2a2a;margin-left:6px}
+  .empty{color:#555;font-size:14px;padding:2rem 0}
+</style></head><body>
+<h1>C12 Thermal Detection — Live Review</h1>
+<div class="stats">
+  <div class="stat"><div class="stat-label">Total captures</div>
+    <div class="stat-val">{{ total }}</div></div>
+  <div class="stat"><div class="stat-label">Humans</div>
+    <div class="stat-val human">{{ counts.human }}</div></div>
+  <div class="stat"><div class="stat-label">Animals</div>
+    <div class="stat-val animal">{{ counts.animal }}</div></div>
+  <div class="stat"><div class="stat-label">Vehicles</div>
+    <div class="stat-val vehicle">{{ counts.vehicle }}</div></div>
+</div>
+<div class="grid">
+{% if captures %}
+  {% for c in captures %}
+  <div class="card">
+    <img src="/img/{{ c.thermal_file }}" alt="thermal">
+    <div class="card-body">
+      <div class="card-label {{ c.target_class }}">
+        {{ c.target_class|upper }}
+        <span class="conf">{{ (c.confidence*100)|round|int }}%</span>
+      </div>
+      <div class="card-meta">
+        {{ c.timestamp_utc[:19].replace('T',' ') }} UTC<br>
+        {% if c.gps %}
+        GPS {{ c.gps.lat|round(5) }}, {{ c.gps.lon|round(5) }}<br>
+        Alt {{ c.gps.rel_alt_m|round(1) }} m<br>
+        {% endif %}
+        Peak intensity: {{ c.peak_intensity }}<br>
+        Blob area: {{ c.blob_area_px }} px
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+  <p class="empty">No captures yet — detections will appear here automatically.</p>
+{% endif %}
+</div>
+</body></html>
+"""
 
-    def __init__(
-        self,
-        backend_host: str = "127.0.0.1",
-        backend_port: int = 14560,
-        report_interval: float = 1.0,  # Send status every N seconds
-    ):
-        self.backend_host = backend_host
-        self.backend_port = backend_port
-        self.report_interval = report_interval
+def load_captures(limit=50):
+    files = sorted(
+        glob.glob(os.path.join(CAPTURES_DIR, "*_meta.json")),
+        reverse=True)[:limit]
+    caps, counts = [], {"human":0,"animal":0,"vehicle":0}
+    for f in files:
+        with open(f) as fh:
+            m = json.load(fh)
+        caps.append(m)
+        label = m.get("target_class","")
+        if label in counts:
+            counts[label] += 1
+    return caps, counts
 
-        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._start_time = time.time()
-        self._last_report = 0.0
-        self._frame_count = 0
-        self._detection_count = 0
-        self._fps_history: deque = deque(maxlen=60)  # 1 minute of FPS samples
-        self._temp_history: deque = deque(maxlen=300)  # 5 minutes of max temps
+@app.route("/")
+def index():
+    caps, counts = load_captures()
+    all_files    = glob.glob(os.path.join(CAPTURES_DIR, "*_meta.json"))
+    return render_template_string(HTML,
+        captures=caps, counts=counts, total=len(all_files))
 
-        # Live aggregates
-        self._severity_counts = {"NORMAL": 0, "ELEVATED": 0, "WARNING": 0, "CRITICAL": 0}
-        self._hottest_ever = 0.0
-        self._last_detections: list = []
+@app.route("/img/<filename>")
+def serve_image(filename):
+    path = os.path.join(CAPTURES_DIR, filename)
+    if os.path.exists(path):
+        return send_file(path, mimetype="image/jpeg")
+    return "Not found", 404
 
-    def update(
-        self,
-        detections: list = None,
-        frame_stats: dict = None,
-        streams_status: dict = None,
-        capture_status: dict = None,
-        filter_stats: dict = None,
-        fps: float = 0.0,
-    ):
-        """
-        Update dashboard with latest pipeline data.
-        Call this every frame or at a regular interval.
-        """
-        self._frame_count += 1
+@app.route("/api/captures")
+def api_captures():
+    caps, counts = load_captures()
+    return jsonify({"captures": caps, "counts": counts})
 
-        if fps > 0:
-            self._fps_history.append(fps)
-
-        if frame_stats and "max_temp" in frame_stats:
-            self._temp_history.append(frame_stats["max_temp"])
-            if frame_stats["max_temp"] > self._hottest_ever:
-                self._hottest_ever = frame_stats["max_temp"]
-
-        if detections:
-            self._detection_count += len(detections)
-            self._last_detections = detections
-            for det in detections:
-                severity = getattr(det, "severity", "NORMAL") if hasattr(det, "severity") else "NORMAL"
-                if severity in self._severity_counts:
-                    self._severity_counts[severity] += 1
-
-        # Send report at configured interval
-        now = time.time()
-        if now - self._last_report >= self.report_interval:
-            self._send_report(frame_stats, streams_status, capture_status, filter_stats)
-            self._last_report = now
-
-    def _send_report(
-        self,
-        frame_stats: dict = None,
-        streams_status: dict = None,
-        capture_status: dict = None,
-        filter_stats: dict = None,
-    ):
-        """Send pipeline status report to Node.js backend."""
-        now = time.time()
-        uptime = now - self._start_time
-
-        avg_fps = sum(self._fps_history) / max(1, len(self._fps_history)) if self._fps_history else 0
-
-        report = {
-            "type": "pipeline_status",
-            "timestamp": datetime.now().isoformat(),
-            "uptime_seconds": round(uptime, 1),
-            "pipeline": {
-                "running": True,
-                "frames_processed": self._frame_count,
-                "avg_fps": round(avg_fps, 1),
-                "total_detections": self._detection_count,
-                "severity_counts": dict(self._severity_counts),
-                "hottest_ever": round(self._hottest_ever, 1),
-            },
-            "frame": frame_stats or {},
-            "streams": streams_status or {},
-            "capture": capture_status or {},
-            "filter": filter_stats or {},
-            "active_detections": len(self._last_detections),
-        }
-
-        try:
-            msg = json.dumps(report).encode("utf-8")
-            self._socket.sendto(msg, (self.backend_host, self.backend_port))
-        except Exception as e:
-            logger.error(f"[Dashboard] Send error: {e}")
-
-    def log_summary(self):
-        """Print a summary to the console."""
-        uptime = time.time() - self._start_time
-        avg_fps = sum(self._fps_history) / max(1, len(self._fps_history)) if self._fps_history else 0
-
-        logger.info(
-            f"[Pipeline] Uptime: {uptime:.0f}s | "
-            f"Frames: {self._frame_count} | "
-            f"FPS: {avg_fps:.1f} | "
-            f"Detections: {self._detection_count} | "
-            f"Hottest: {self._hottest_ever:.1f}°C"
-        )
-
-    def get_status(self) -> dict:
-        """Get current pipeline status as a dict."""
-        now = time.time()
-        avg_fps = sum(self._fps_history) / max(1, len(self._fps_history)) if self._fps_history else 0
-
-        return {
-            "running": True,
-            "uptime": round(now - self._start_time, 1),
-            "frames": self._frame_count,
-            "fps": round(avg_fps, 1),
-            "detections": self._detection_count,
-            "severity_counts": dict(self._severity_counts),
-            "hottest_ever": round(self._hottest_ever, 1),
-        }
-
-    def close(self):
-        """Clean up resources."""
-        if self._socket:
-            self._socket.close()
-            self._socket = None
-
+def start_dashboard(port=5000):
+    # Call this from main.py to run dashboard in background
+    t = threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=port,
+                               debug=False, use_reloader=False),
+        daemon=True)
+    t.start()
+    print(f"[DASHBOARD] Running at http://0.0.0.0:{port}")
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-
-    dashboard = PipelineDashboard(report_interval=2.0)
-
-    # Simulate pipeline updates
-    for i in range(20):
-        dashboard.update(
-            frame_stats={"max_temp": 35.0 + i * 0.5, "min_temp": 20.0, "avg_temp": 28.0},
-            fps=24.5,
-        )
-        time.sleep(0.5)
-        if i % 5 == 0:
-            dashboard.log_summary()
-
-    dashboard.close()
-    print("Dashboard test complete")
+    app.run(host="0.0.0.0", port=5000, debug=True)

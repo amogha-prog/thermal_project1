@@ -11,24 +11,31 @@ export function exportCapturesCSV(captures) {
     'Max Temp (°C)',
     'Avg Temp (°C)',
     'Severity',
-    'Flight Mode'
+    'Flight Mode',
+    'Location Link'
   ].join(',');
 
   // CSV Rows
   const rows = captures.map(c => {
     const maxT = parseFloat(c.telemetry?.maxTemp || 0);
     const sev = maxT > 70 ? 'CRITICAL' : maxT > 50 ? 'WARNING' : maxT > 35 ? 'ELEVATED' : 'NORMAL';
+    const lat = parseFloat(c.location?.lat || 0).toFixed(6);
+    const lon = parseFloat(c.location?.lon || 0).toFixed(6);
+    const mapsUrl = (c.location?.lat && c.location?.lon)
+      ? `https://www.google.com/maps?q=${lat},${lon}&z=18`
+      : '';
 
     return [
       c.id,
       c.timestamp || '',
-      parseFloat(c.location?.lat || 0).toFixed(6),
-      parseFloat(c.location?.lon || 0).toFixed(6),
+      lat,
+      lon,
       parseFloat(c.location?.alt || 0).toFixed(2),
       maxT.toFixed(1),
       parseFloat(c.telemetry?.avgTemp || 0).toFixed(1),
       sev,
-      c.telemetry?.flightMode || ''
+      c.telemetry?.flightMode || '',
+      mapsUrl
     ].join(',');
   });
 

@@ -49,29 +49,28 @@ export function captureThumbnail(canvasRef) {
  * Falls back to system clock only if no GPS fix exists.
  */
 export function buildCaptureUnit({ thermalFrame, rgbFrame, thermalThumb, rgbThumb, telemetry, missionId, index }) {
-  // ── Resolve timestamp source: prefer GPS time from drone ──────────────────
-  // telemetry.gpsDatetimeUtc is set by drone_bridge.py from SYSTEM_TIME MAVLink msg
-  const gpsUtcStr = telemetry?.gpsDatetimeUtc;   // e.g. "2026-05-02 10:13:30" (UTC)
-
-  let captureDate;
-  let timeSource; // 'gps' | 'system'
+  // ── Resolve timestamp: GPS-adjusted per-capture time ──────────────────────
+  // Use the GPS UTC string from the bridge as the authoritative source.
+  // The IST string (gpsDatetimeIst) is what the dashboard TIME panel displays —
+  // we store it so the PDF can show the exact same value the user sees.
+  const gpsUtcStr    = telemetry?.gpsDatetimeUtc;   // "2026-05-05 11:09:44" (true UTC)
+  const gpsIstStr    = telemetry?.gpsDatetimeIst;   // "2026-05-05 16:39:44" (IST, what the UI shows)
+  const sysNow       = new Date();                  // exact moment of button press
+  let captureDate    = sysNow;
+  let timeSource     = 'system';
 
   if (gpsUtcStr && gpsUtcStr.length > 0) {
-    // Parse the UTC string from the drone bridge (format: "YYYY-MM-DD HH:MM:SS")
-    const parsed = new Date(gpsUtcStr.replace(' ', 'T') + 'Z');
-    if (!isNaN(parsed.getTime())) {
-      captureDate = parsed;
+    const gpsRef = new Date(gpsUtcStr.replace(' ', 'T') + 'Z');
+    if (!isNaN(gpsRef.getTime())) {
+      // Apply sync error offset to the live system clock so every capture
+      // gets its own second-accurate, GPS-referenced UTC timestamp.
+      const syncErrorMs = (telemetry?.timeSyncErrorSec ?? 0) * 1000;
+      captureDate = new Date(sysNow.getTime() - syncErrorMs);
       timeSource  = 'gps';
     }
   }
 
-  if (!captureDate) {
-    // No GPS time — fall back to system clock
-    captureDate = new Date();
-    timeSource  = 'system';
-  }
-
-  // Format IST display string (UTC+5:30)
+  // Format IST display string (UTC+5:30) — used for sidebar and UI
   const istFormatter = new Intl.DateTimeFormat('en-IN', {
     timeZone: 'Asia/Kolkata',
     hour:   '2-digit', minute: '2-digit', second: '2-digit',
@@ -84,10 +83,12 @@ export function buildCaptureUnit({ thermalFrame, rgbFrame, thermalThumb, rgbThum
 
   return {
     id:        `CAP-${String(index).padStart(3, '0')}`,
-    timestamp: captureDate.toISOString(),           // always UTC ISO
-    timeStr:   istFormatter.format(captureDate),    // IST HH:MM:SS for display
-    dateStr:   istDateFormatter.format(captureDate),// IST date for display
-    timeSource,                                     // 'gps' or 'system' — shown in UI/PDF
+    timestamp:       captureDate.toISOString(),   // UTC ISO (GPS-adjusted sys clock)
+    gpsTimestamp:    gpsUtcStr || null,           // raw UTC string from drone bridge
+    gpsTimestampIst: gpsIstStr || null,           // IST string matching dashboard TIME panel
+    timeStr:   istFormatter.format(captureDate),  // IST HH:MM:SS for sidebar
+    dateStr:   istDateFormatter.format(captureDate),
+    timeSource,                                   // 'gps' or 'system'
     missionId,
 
     // GPS + flight data frozen at capture moment

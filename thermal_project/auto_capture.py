@@ -126,7 +126,8 @@ class AutoCapture:
             "capture_number": self._capture_count,
             "detections": [],
             "images": {},
-            "geotag": self._query_geotag(mono_now)
+            # Query drone_bridge via the mono path (most precise)
+            "geotag": self._query_geotag(wall_now, mono_now)
         }
 
         if self.save_images:
@@ -156,14 +157,20 @@ class AutoCapture:
 
         return capture_info
 
-    def _query_geotag(self, mono_t: float) -> dict:
-        """Query the drone_bridge for interpolated telemetry at capture time."""
+    def _query_geotag(self, sys_t: float, mono_t: float = None) -> dict:
+        """Query the drone_bridge for interpolated telemetry at capture time.
+        
+        Sends both sys_t and mono_t so the bridge can use the faster
+        monotonic interpolation path (no GPS clock conversion error).
+        """
         if not self._geotag_socket:
             self._geotag_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._geotag_socket.settimeout(0.2)
         
         try:
-            query = {"type": "geotag_query", "mono_t": mono_t}
+            query = {"type": "geotag_query", "sys_t": sys_t}
+            if mono_t is not None:
+                query["mono_t"] = mono_t   # enables interpolate_mono() fast path
             self._geotag_socket.sendto(json.dumps(query).encode(), self.geotag_addr)
             data, _ = self._geotag_socket.recvfrom(2048)
             return json.loads(data.decode())

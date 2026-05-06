@@ -516,10 +516,14 @@ def run():
                         tel["cog"] = msg.cog / 100.0
 
                 elif mtype == 'BATTERY_STATUS':
-                    if msg.voltages and msg.voltages[0] not in (0, 65535):
-                        v = msg.voltages[0] / 1000.0
-                        tel["battery_voltage"] = v
-                        tel["battery_pct"] = max(0.0, min(100.0, ((v - 19) / (25.2 - 19)) * 100))
+                    try:
+                        voltages = list(msg.voltages) if msg.voltages is not None else []
+                        if voltages and voltages[0] not in (0, 65535):
+                            v = voltages[0] / 1000.0
+                            tel["battery_voltage"] = v
+                            tel["battery_pct"] = max(0.0, min(100.0, ((v - 19) / (25.2 - 19)) * 100))
+                    except Exception:
+                        pass
 
                 elif mtype == 'SYS_STATUS':
                     if tel["battery_voltage"] == 0 and msg.voltage_battery not in (0, 65535):

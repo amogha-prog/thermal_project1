@@ -279,9 +279,6 @@ function useThermalSim(canvasRef, active, paletteKey, detections) {
       ctx.fillStyle='rgba(0,0,0,0.02)';
       for (let sy=0; sy<H; sy+=2) ctx.fillRect(0,sy,W,1);
 
-      // Centre crosshair with ambient temperature
-      drawCrosshair(ctx, W/2, H/2, `${(22+Math.sin(dt*.2)*.5).toFixed(1)}°C`);
-      drawLegend(ctx, W, H, lut, minT, maxT);
       drawDetections(ctx, W, H, detectionsRef.current);
       drawLabel(ctx, `${(dt%60).toFixed(0).padStart(2,'0')}s`, 6, H-6, 8, false);
     };
@@ -394,22 +391,10 @@ function useRtspStream(canvasRef, active, isThermal, paletteKey, detections) {
         
         ctx.putImageData(frame, 0, 0);
 
-        // Scan-line & Legends
+        // Scan-line & Legend
         ctx.fillStyle = 'rgba(0,0,0,0.02)';
         for (let sy = 0; sy < H; sy += 2) ctx.fillRect(0, sy, W, 1);
 
-        const tel = useTIOSStore.getState().telemetry;
-        let cTempText = "0.0";
-        if (tel && tel.maxTemp !== undefined) {
-           cTempText = Math.max(20, tel.maxTemp).toFixed(1);
-        } else {
-           const minT = 20, maxT = 100;
-           const cNorm = Math.round(((cLuma - smoothMin) / span) * 255);
-           cTempText = (minT + (cNorm / 255) * (maxT - minT)).toFixed(1);
-        }
-
-        drawCrosshair(ctx, cx, cy, `${cTempText}°C`);
-        drawLegend(ctx, W, H, lut, 20, 100);
         drawDetections(ctx, W, H, detectionsRef.current);
         drawLabel(ctx, '● LIVE STREAM', 6, H - 6, 9);
       } else {
@@ -584,56 +569,11 @@ function useWebcam(canvasRef, active, isThermal, paletteKey, detections) {
               ctx.fillStyle = 'rgba(0,0,0,0.02)';
               for (let sy = 0; sy < H; sy += 2) ctx.fillRect(0, sy, W, 1);
 
-              // ── FIX 2: Centre temperature uses the freshly-updated smoothed range ──
-              const minT = 20, maxT = 100;
-              const updatedSpan = Math.max(1, smoothMax - smoothMin);
-              const cNorm      = Math.round(((cLuma - smoothMin) / updatedSpan) * 255);
-              const cTempText  = (minT + (Math.max(0, Math.min(255, cNorm)) / 255) * (maxT - minT)).toFixed(1);
-
-              // ── Async Face Detection at ~10 fps ──
-              if (faceDetectorRef.current && (ts - lastFaceDetectTime.current > 100)) {
-                lastFaceDetectTime.current = ts;
-                faceDetectorRef.current.detect(video)
-                  .then((faces) => {
-                    // ── FIX 3: Store face boxes in PIXEL coords for drawDetections ──
-                    faceDetectionsRef.current = faces.map((face) => {
-                      const bb  = face.boundingBox;
-                      const vw  = video.videoWidth  || W;
-                      const vh  = video.videoHeight || H;
-                      // Scale from video-space to canvas-space
-                      const scX = W / vw;
-                      const scY = H / vh;
-                      const bx  = bb.x      * scX;
-                      const by  = bb.y      * scY;
-                      const bw  = bb.width  * scX;
-                      const bh  = bb.height * scY;
-                      // Extend box down to include body (face box ≈ head → add 2× height)
-                      const bodyH = Math.min(bh * 3.0, H - by);
-                      // Realistic face/forehead temperature
-                      const temp = 35.5 + Math.random() * 2.0;
-                      return {
-                        // Pixel coords — picked up by the `det.x > 1` branch in drawDetections
-                        x: bx,
-                        y: by,
-                        w: bw,
-                        h: bodyH,
-                        is_scaled: true,
-                        max_temp: parseFloat(temp.toFixed(1)),
-                        severity: 'WARNING',
-                        label: 'HUMAN',
-                      };
-                    });
-                  })
-                  .catch(() => { /* silence errors on unsupported frames */ });
-              }
-
               // Draw detections: prefer FaceDetector results; fall back to Python pipeline
               const detsToDraw = faceDetectionsRef.current.length > 0
                 ? faceDetectionsRef.current
                 : detectionsRef.current;
 
-              drawCrosshair(ctx, W / 2, H / 2, `${cTempText}°C`);
-              drawLegend(ctx, W, H, lut, minT, maxT);
               drawDetections(ctx, W, H, detsToDraw);
             }
 

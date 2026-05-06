@@ -110,16 +110,21 @@ app.post('/api/report/generate', (req, res) => {
         peak_intensity: parseFloat(cap.telemetry.maxTemp) || 0,
         mean_intensity: parseFloat(cap.telemetry.avgTemp) || 0,
         palette: "blackhot",
-        timestamp_utc: cap.timestamp,   // GPS-sourced ISO UTC timestamp
-        time_source: cap.timeSource || 'system',  // 'gps' or 'system'
+        // ── Timestamps ───────────────────────────────────────────────────
+        // Primary UTC reference (GPS-adjusted system clock, stored as ISO string)
+        timestamp_utc:     cap.timestamp,
+        // Raw GPS UTC string directly from drone bridge (e.g. "2026-05-05 11:09:44")
+        gps_timestamp_utc: cap.gpsTimestamp || cap.timestamp,
+        // IST string from drone bridge — THIS IS WHAT THE DASHBOARD TIME PANEL SHOWS
+        // (e.g. "2026-05-05 16:39:44") — the PDF will display this as primary
+        gps_timestamp_ist: cap.gpsTimestampIst || null,
+        time_source: cap.timeSource || 'gps',
         thermal_file: t_file,
         visible_file: v_file
       };
       
-      // We force severity target_class based on temp for demo styling
-      if (meta.peak_intensity > 70) meta.target_class = 'human';
-      else if (meta.peak_intensity > 50) meta.target_class = 'vehicle';
-      else meta.target_class = 'animal';
+      // Remove demo styling that forced 'animal', use 'HOTSPOT' default
+      meta.target_class = 'HOTSPOT';
 
       fs.writeFileSync(path.join(tempDir, `CAP-${idx}_meta.json`), JSON.stringify(meta, null, 2));
     });

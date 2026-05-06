@@ -15,3 +15,8 @@ pymavlink>=2.4.40
 # Note: ultralytics is commented out because it has heavy dependencies.
 # Install it separately if you want to use YOLO-based detection:
 #   pip install ultralytics
+
+# PDF Generation:
+reportlab
+pypdf
+matplotlib

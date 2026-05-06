@@ -19,16 +19,16 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
 # ── Brand colours ────────────────────────────────────────────────────────────
-C_PALE   = colors.HexColor("#F0F4FF")   # Pale Blue (Matches Logo V2)
-C_MID    = colors.HexColor("#0284C7")   # Sky 600
-C_DARK   = colors.HexColor("#0F172A")   # Slate 900
+C_PALE   = colors.HexColor("#EEF5FF")   # Pale Blue (Dashboard BG)
+C_MID    = colors.HexColor("#4B6FBF")   # Medium Blue (Dashboard Accent)
+C_DARK   = colors.HexColor("#081F60")   # Dark Navy (Dashboard Header/Logo BG)
 C_WHITE  = colors.white
 C_GRAY   = colors.HexColor("#64748B")   # Slate 500
 C_LGRAY  = colors.HexColor("#E2E8F0")   # Slate 200
 C_SUCCESS= colors.HexColor("#10B981")   # Emerald 500
 C_WARN   = colors.HexColor("#F59E0B")   # Amber 500
 C_INFO   = colors.HexColor("#3B82F6")   # Blue 500
-C_ACCENT = colors.HexColor("#0EA5E9")   # Sky 500
+C_ACCENT = colors.HexColor("#4B6FBF")   # Using MID as accent
 
 def find_logo(names):
     # Try multiple possible locations and multiple filenames
@@ -51,9 +51,9 @@ def find_logo(names):
             if os.path.exists(p): return p
     return None
 
-# Prioritize the Vertical_Logo_white.jpeg as requested
-LOGO_VERTICAL = find_logo(["Vertical_Logo_white.jpeg", "Vertical_Logo_white-removebg-preview.png"])
-LOGO_SQUARE   = find_logo(["Square_logo_white.jpeg", "Square_logo_white-removebg-preview.png"])
+# Use the removebg PNGs as requested, fallback to jpeg
+LOGO_VERTICAL = find_logo(["Vertical_Logo_white-removebg-preview.png", "Vertical_Logo_white.jpeg"])
+LOGO_SQUARE   = find_logo(["Square_logo_white-removebg-preview.png", "Square_logo_white.jpeg"])
 
 TARGET_COLORS = {
     "human"  : colors.HexColor("#10B981"),
@@ -178,53 +178,11 @@ def load_captures(captures_dir):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def fmt_ts(ts_str):
-    """Parse any UTC timestamp string and return a readable UTC string."""
-    if not ts_str:
-        return "—"
-    s = str(ts_str).strip()
     try:
-        normalized = s.replace('Z', '+00:00')
-        dt = datetime.fromisoformat(normalized)
-        # Convert to UTC if timezone-aware
-        if dt.utcoffset() is not None:
-            from datetime import timezone as tz
-            dt = dt.astimezone(tz.utc)
+        dt = datetime.fromisoformat(ts_str)
         return dt.strftime("%d %b %Y  %H:%M:%S UTC")
     except Exception:
-        pass
-    try:
-        # GPS bridge UTC format: "YYYY-MM-DD HH:MM:SS" (already UTC)
-        dt = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
-        return dt.strftime("%d %b %Y  %H:%M:%S UTC")
-    except Exception:
-        pass
-    try:
-        dt = datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
-        return dt.strftime("%d %b %Y  %H:%M:%S UTC")
-    except Exception:
-        return s
-
-
-def fmt_ist(ist_str):
-    """
-    Format a raw IST string from the drone bridge into a readable IST label.
-    Input:  "2026-05-05 16:39:44"  (already IST, sent by drone_bridge.py)
-    Output: "05 May 2026  16:39:44 IST"
-    This matches exactly what the dashboard TIME (IST) panel shows.
-    """
-    if not ist_str:
-        return "—"
-    s = str(ist_str).strip()
-    try:
-        dt = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
-        return dt.strftime("%d %b %Y  %H:%M:%S IST")
-    except Exception:
-        try:
-            dt = datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
-            return dt.strftime("%d %b %Y  %H:%M:%S IST")
-        except Exception:
-            return s
-
+        return ts_str
 
 def conf_bar_cell(conf):
     pct    = round(conf * 100)
@@ -325,45 +283,24 @@ def cover_page(canv, caps, mission_id):
     
     ty -= 8*mm
     if caps:
-        # Prefer GPS-synchronised timestamps; fall back to system UTC
-        def _best_ts(cap):
-            return cap.get("gps_timestamp_utc") or cap.get("timestamp_utc", "")
-        def _best_ist(cap):
-            return cap.get("gps_timestamp_ist") or None
-
-        # IST is the primary display — matches what the dashboard TIME panel shows
-        ist_first  = fmt_ist(_best_ist(caps[0]))
-        ist_last   = fmt_ist(_best_ist(caps[-1]))
-        src_first  = "gps" if caps[0].get("gps_timestamp_ist") else caps[0].get("time_source", "sys")
-        src_last   = "gps" if caps[-1].get("gps_timestamp_ist") else caps[-1].get("time_source", "sys")
-
-        def _src_badge(src):
-            return ("  \u23F1 GPS", colors.HexColor("#10B981")) if src == "gps" \
-                   else ("  \u26A0 SYS", colors.HexColor("#F59E0B"))
-
+        ts_first = fmt_ts(caps[0]["timestamp_utc"])
+        ts_last  = fmt_ts(caps[-1]["timestamp_utc"])
+        
         canv.setFont("Helvetica-Bold", 10)
         canv.setFillColor(C_ACCENT)
-        canv.drawString(tx, ty, "START TIME (IST)")
+        canv.drawString(tx, ty, "START TIME")
         canv.setFont("Helvetica", 11)
         canv.setFillColor(C_WHITE)
-        canv.drawString(tx + 45*mm, ty, ist_first)
-        badge_text, badge_col = _src_badge(src_first)
-        canv.setFont("Helvetica-Bold", 8)
-        canv.setFillColor(badge_col)
-        canv.drawString(tx + 45*mm + 78*mm, ty, badge_text)
-
+        canv.drawString(tx + 45*mm, ty, ts_first)
+        
         ty -= 8*mm
         canv.setFont("Helvetica-Bold", 10)
         canv.setFillColor(C_ACCENT)
-        canv.drawString(tx, ty, "END TIME (IST)")
+        canv.drawString(tx, ty, "END TIME")
         canv.setFont("Helvetica", 11)
         canv.setFillColor(C_WHITE)
-        canv.drawString(tx + 45*mm, ty, ist_last)
-        badge_text, badge_col = _src_badge(src_last)
-        canv.setFont("Helvetica-Bold", 8)
-        canv.setFillColor(badge_col)
-        canv.drawString(tx + 45*mm + 78*mm, ty, badge_text)
-
+        canv.drawString(tx + 45*mm, ty, ts_last)
+        
         ty -= 8*mm
         canv.setFont("Helvetica-Bold", 10)
         canv.setFillColor(C_ACCENT)
@@ -743,22 +680,15 @@ def capture_card(story, meta, idx):
     usable_w = PAGE_W - 2*MARGIN
 
     # ── card header bar ───────────────────────────────────────────────────────
-    # IST is the primary display — same as what the dashboard TIME panel shows
-    _hdr_gps_ist  = meta.get("gps_timestamp_ist")   # IST string from drone bridge
-    _hdr_gps_utc  = meta.get("gps_timestamp_utc")
-    _hdr_src      = meta.get("time_source", "system")
-    _is_gps_hdr   = bool(_hdr_gps_ist) or bool(_hdr_gps_utc) or _hdr_src == "gps"
-
-    # Use IST if available (matches what user sees on screen), else fall back to UTC
-    raw_ts        = _hdr_gps_ist or _hdr_gps_utc or meta.get("timestamp_utc", "")
-    _disp_ts      = fmt_ist(raw_ts) if _hdr_gps_ist else fmt_ts(raw_ts)
-    _badge_lbl    = "⏱ GPS-SYNC" if _is_gps_hdr else "⚠ SYS-CLOCK"
-    _badge_col    = "#10B981"    if _is_gps_hdr else "#F59E0B"
-
+    time_source = meta.get("time_source", "system")
+    ts_label    = "⏱ GPS" if time_source == "gps" else "⚠ SYS"
+    
+    # Priority: use GPS timestamp if available, otherwise fallback to UTC string
+    raw_ts = meta.get("gps_timestamp_utc") or meta.get("timestamp_utc", "")
     ts_text = (
-        f'{_disp_ts} '
-        f'<font color="{_badge_col}"><b>[{_badge_lbl}]</b></font>'
-
+        f'{fmt_ts(raw_ts)} '
+        f'<font color="{"#10B981" if time_source == "gps" else "#F59E0B"}">'
+        f'[{ts_label}]</font>'
     )
 
     header_data = [[
@@ -767,7 +697,7 @@ def capture_card(story, meta, idx):
         Paragraph(label.upper(), S("dl",
             fontName="Helvetica-Bold", fontSize=11, textColor=tc)),
         Paragraph(ts_text, S("dt",
-            fontName="Helvetica", fontSize=9, textColor=C_PALE,
+            fontName="Helvetica", fontSize=10, textColor=C_PALE,
             alignment=TA_RIGHT)),
     ]]
     hw = usable_w / 3
@@ -864,173 +794,75 @@ def capture_card(story, meta, idx):
     else:
         maps_cell = Paragraph("No GPS fix", STYLES["small"])
 
-    # ── Resolve timestamps for this capture ─────────────────────────────────
-    time_source   = meta.get("time_source", "system")
-    gps_ist_raw   = meta.get("gps_timestamp_ist")              # IST = what UI shows
-    gps_utc_raw   = meta.get("gps_timestamp_utc") or meta.get("timestamp_utc", "")
-    sys_utc_raw   = meta.get("timestamp_utc", "")
-    is_gps_synced = bool(gps_ist_raw) or bool(meta.get("gps_timestamp_utc")) or time_source == "gps"
-
-    # Primary display: IST (matches dashboard TIME panel exactly)
-    gps_ist_fmt   = fmt_ist(gps_ist_raw) if gps_ist_raw else fmt_ts(gps_utc_raw)
-    # Secondary display: UTC
-    gps_utc_fmt   = fmt_ts(gps_utc_raw)
-
-    gps_badge_color = "#10B981" if is_gps_synced else "#F59E0B"
-    gps_badge_label = "\u23F1 GPS-SYNC" if is_gps_synced else "\u26A0 SYS-CLOCK"
-
-    # ── Premium GPS & FLIGHT DATA panel — 2-column side-by-side layout ─────────
-
-    # Helper: styled label and value paragraphs for the grid
-    def _lbl(text):
-        return Paragraph(text, S("gl", fontName="Helvetica-Bold", fontSize=8,
-                                 textColor=C_GRAY, leading=12))
-
-    def _val(text, color=C_DARK):
-        return Paragraph(text, S("gv", fontName="Helvetica-Bold", fontSize=10,
-                                 textColor=color, leading=14))
-
-    def _val_sm(text, color=C_DARK):
-        return Paragraph(text, S("gvs", fontName="Helvetica", fontSize=9,
-                                 textColor=color, leading=13))
-
-    # GPS badge chip
-    badge_color = colors.HexColor(gps_badge_color)
-    gps_badge_cell = Paragraph(
-        f'<font color="{gps_badge_color}"><b> {gps_badge_label} </b></font>',
-        S("gbadge", fontName="Helvetica-Bold", fontSize=9,
-          textColor=badge_color, leading=13)
-    )
-    gps_time_val = Paragraph(
-        f'<b>{gps_ist_fmt}</b>',
-        S("gtsv", fontName="Helvetica-Bold", fontSize=9,
-          textColor=C_DARK, leading=13)
-    )
-
-    usable_w = PAGE_W - 2 * MARGIN
-    GPS_ROW_BG  = colors.HexColor("#E8FFF5") if is_gps_synced else colors.HexColor("#FFF8E1")
-    SYNC_BORDER = colors.HexColor("#10B981")  if is_gps_synced else colors.HexColor("#F59E0B")
-    C_LBLBG     = colors.HexColor("#F1F5F9")   # subtle label cell background
-    C_VALBG     = colors.white
-    C_ALTROW    = colors.HexColor("#F8FAFF")   # alt row tint
-
-    # Column widths: [lbl1 | val1 | lbl2 | val2]
-    W = usable_w
-    cw = [W*0.18, W*0.32, W*0.18, W*0.32]
-
-    # ── Section header ─────────────────────────────────────────────────────────
-    header_para = Paragraph(
-        "&#9650; GPS &amp; FLIGHT DATA",
-        S("gph", fontName="Helvetica-Bold", fontSize=9, textColor=C_WHITE,
-          leading=14, spaceAfter=0)
-    )
-
-    # ── GPS timestamp row (full-width span) ────────────────────────────────────
-    ts_label_para = Paragraph(
-        "&#128336; GPS Time (IST)",
-        S("gtsl", fontName="Helvetica-Bold", fontSize=8,
-          textColor=colors.HexColor("#10B981" if is_gps_synced else "#F59E0B"), leading=12)
-    )
-    ts_val_para = Paragraph(
-        f'<b>{gps_ist_fmt}</b>  '
-        f'<font color="{gps_badge_color}"><b>[{gps_badge_label}]</b></font>',
-        S("gtsv2", fontName="Helvetica", fontSize=9, textColor=C_DARK, leading=13)
-    )
-
-    # ── Data pairs (label, value, label, value) ────────────────────────────────
-    lat_str = f"{lat_val:.6f}°" if lat_val else "N/A"
-    lon_str = f"{lon_val:.6f}°" if lon_val else "N/A"
-    alt_str = f"{gps.get('rel_alt_m', 0):.1f} m"
-    hdg_str = f"{gps.get('hdg_deg', 0):.1f}°"
-    sat_str = str(gps.get("satellites", "—"))
-    hdp_str = str(gps.get("hdop", "—"))
-    rol_str = f"{gps.get('roll_deg', 0):.1f}°"
-    pit_str = f"{gps.get('pitch_deg', 0):.1f}°"
-    yaw_str = f"{gps.get('yaw_deg', 0):.1f}°"
-
-    gps_grid = [
-        # Row 0: dark header spanning all columns
-        [header_para, "", "", ""],
-
-        # Row 1: GPS Time (IST) — full-width span across all 4 cols
-        [ts_label_para, ts_val_para, "", ""],
-
-        # Row 2: Lat | Lon
-        [_lbl("Latitude"),     _val(lat_str, C_DARK),
-         _lbl("Longitude"),    _val(lon_str, C_DARK)],
-
-        # Row 3: Altitude | Heading
-        [_lbl("Altitude (AGL)"), _val(alt_str, C_MID),
-         _lbl("Heading"),        _val(hdg_str, C_DARK)],
-
-        # Row 4: Satellites | HDOP
-        [_lbl("Satellites"), _val(sat_str, colors.HexColor("#10B981")),
-         _lbl("HDOP"),       _val(hdp_str, C_DARK)],
-
-        # Row 5: Roll | Pitch
-        [_lbl("Roll"),  _val(rol_str, C_DARK),
-         _lbl("Pitch"), _val(pit_str, C_DARK)],
-
-        # Row 6: Yaw | Location Link
-        [_lbl("Yaw"),          _val(yaw_str, C_DARK),
-         _lbl("Location"),     maps_cell],
+    gps_data = [
+        [Paragraph("GPS &amp; FLIGHT DATA", S("ph2", fontName="Helvetica-Bold",
+                   fontSize=8, textColor=C_WHITE)), ""],
+        [Paragraph("Latitude",   STYLES["label"]),
+         Paragraph(f"{lat_val:.6f}°" if lat_val else "N/A",
+                   STYLES["value"])],
+        [Paragraph("Longitude",  STYLES["label"]),
+         Paragraph(f"{lon_val:.6f}°" if lon_val else "N/A",
+                   STYLES["value"])],
+        [Paragraph("Altitude (AGL)", STYLES["label"]),
+         Paragraph(f"{gps.get('rel_alt_m', 0):.1f} m", STYLES["value"])],
+        [Paragraph("Heading",    STYLES["label"]),
+         Paragraph(f"{gps.get('hdg_deg', 0):.1f}°",    STYLES["value"])],
+        [Paragraph("Satellites", STYLES["label"]),
+         Paragraph(str(gps.get("satellites", "—")),     STYLES["value"])],
+        [Paragraph("HDOP",       STYLES["label"]),
+         Paragraph(str(gps.get("hdop", "—")),           STYLES["value"])],
+        [Paragraph("Roll / Pitch", STYLES["label"]),
+         Paragraph(f"{gps.get('roll_deg',0):.1f}° / {gps.get('pitch_deg',0):.1f}°",
+                   STYLES["value"])],
+        [Paragraph("Yaw",        STYLES["label"]),
+         Paragraph(f"{gps.get('yaw_deg', 0):.1f}°",    STYLES["value"])],
+        # ── Google Maps clickable link row ────────────────────────────────────
+        [Paragraph("Location Link", STYLES["label"]),
+         maps_cell],
     ]
 
-    gt = Table(gps_grid, colWidths=cw)
+    panel_w = (usable_w - 4) / 2
+
+    gt = Table(gps_data, colWidths=[panel_w*0.4, panel_w*0.6])
     gt.setStyle(TableStyle([
-        # ── Header row 0 ──────────────────────────────────────────────────────
+        # Header row
         ("BACKGROUND",    (0,0), (-1,0), C_DARK),
         ("SPAN",          (0,0), (-1,0)),
-        ("LEFTPADDING",   (0,0), (-1,0), 12),
-        ("TOPPADDING",    (0,0), (-1,0), 8),
-        ("BOTTOMPADDING", (0,0), (-1,0), 8),
-        ("LINEBELOW",     (0,0), (-1,0), 2, C_MID),
-
-        # ── GPS Time row 1 — highlighted ──────────────────────────────────────
-        ("BACKGROUND",    (0,1), (-1,1), GPS_ROW_BG),
-        ("SPAN",          (1,1), (-1,1)),         # value spans cols 1-3
-        ("LEFTPADDING",   (0,1), (0,1), 12),
-        ("LEFTPADDING",   (1,1), (1,1), 10),
-        ("TOPPADDING",    (0,1), (-1,1), 8),
-        ("BOTTOMPADDING", (0,1), (-1,1), 8),
-        ("LINEBELOW",     (0,1), (-1,1), 1.5, SYNC_BORDER),
-        ("LINEABOVE",     (0,1), (-1,1), 0.5, C_LGRAY),
-
-        # ── Data rows 2-6 ─────────────────────────────────────────────────────
-        # Label columns (0, 2) — subtle background
-        ("BACKGROUND",    (0,2), (0,-1), C_LBLBG),
-        ("BACKGROUND",    (2,2), (2,-1), C_LBLBG),
-        # Value columns (1, 3) — white / alt tint
-        ("ROWBACKGROUNDS", (1,2), (1,-1), [C_VALBG, C_ALTROW]),
-        ("ROWBACKGROUNDS", (3,2), (3,-1), [C_VALBG, C_ALTROW]),
-
-        # Padding — labels
-        ("LEFTPADDING",   (0,2), (0,-1), 10),
-        ("RIGHTPADDING",  (0,2), (0,-1), 6),
-        ("LEFTPADDING",   (2,2), (2,-1), 10),
-        ("RIGHTPADDING",  (2,2), (2,-1), 6),
-        # Padding — values
-        ("LEFTPADDING",   (1,2), (1,-1), 8),
-        ("LEFTPADDING",   (3,2), (3,-1), 8),
-        # Row height
-        ("TOPPADDING",    (0,2), (-1,-1), 9),
-        ("BOTTOMPADDING", (0,2), (-1,-1), 9),
-
-        # Vertical divider between the two pairs
-        ("LINEBEFORE",    (2,2), (2,-1), 1, C_LGRAY),
-
-        # Horizontal grid between data rows
-        ("LINEBELOW",     (0,2), (-1,-2), 0.4, C_LGRAY),
-
-        # Outer border
-        ("BOX",           (0,0), (-1,-1), 1, C_DARK),
-        ("LINEBELOW",     (0,-1), (-1,-1), 1, C_MID),
-
-        # Vertical alignment
-        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+        ("TEXTCOLOR",     (0,0), (-1,0), C_WHITE),
+        ("FONTNAME",      (0,0), (-1,0), "Helvetica-Bold"),
+        ("TOPPADDING",    (0,0), (-1,0), 6),
+        ("BOTTOMPADDING", (0,0), (-1,0), 6),
+        ("LEFTPADDING",   (0,0), (-1,0), 10),
+        
+        # Data rows alignment
+        ("ALIGN",         (1,1), (1,-1), "LEFT"),  # Change to LEFT as requested for better flow
+        ("LEFTPADDING",   (1,1), (1,-1), 15),
+        
+        # Alternate backgrounds
+        ("BACKGROUND",    (0,1), (-1,-1), colors.white),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [C_PALE, colors.white]),
+        
+        # Grid and borders
+        ("GRID",          (0,1), (-1,-1), 0.5, C_LGRAY),
+        ("LINEBELOW",     (0,0), (-1,0),  2, C_MID),
+        ("BOX",           (0,0), (-1,-1), 0.5, C_DARK),
+        
+        # Text styles
+        ("FONTNAME",      (0,1), (0,-1), "Helvetica-Bold"),
+        ("TEXTCOLOR",     (0,1), (0,-1), C_GRAY),
+        ("FONTSIZE",      (0,1), (-1,-1), 9),
     ]))
 
-    story.append(gt)
+    panels = Table([[gt]], colWidths=[panel_w*2],
+                   spaceAfter=0)
+    panels.setStyle(TableStyle([
+        ("VALIGN",       (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING",  (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("TOPPADDING",   (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
+    ]))
+    story.append(panels)
     story.append(PageBreak())
 
 
@@ -1089,24 +921,11 @@ def build_report(captures_dir=CAPTURES_DIR, out_file=OUT_FILE):
     for page in story_reader.pages:
         writer.add_page(page)
 
-    # ── Embed GPS time range in PDF metadata for easy identification ─────────
-    def _best_ts_meta(cap):
-        return cap.get("gps_timestamp_utc") or cap.get("timestamp_utc", "")
-
-    gps_start = _best_ts_meta(caps[0])  if caps else ""
-    gps_end   = _best_ts_meta(caps[-1]) if caps else ""
-    gps_src   = "GPS-SYNC" if any(c.get("gps_timestamp_utc") for c in caps) else "SYS-CLOCK"
-
     writer.add_metadata({
-        "/Title":       "C12 Thermal Detection Report",
-        "/Author":      "Skydroid C12 Detection System",
-        "/Subject":     f"Mission {mission_id}",
-        "/Creator":     "C12 Auto-Capture Pipeline",
-        "/GPS_Start":   gps_start,
-        "/GPS_End":     gps_end,
-        "/GPS_Source":  gps_src,
-        "/GPS_Events":  str(sum(1 for c in caps if c.get("gps") and
-                                c["gps"].get("lat") and c["gps"].get("lon"))),
+        "/Title":   "C12 Thermal Detection Report",
+        "/Author":  "Skydroid C12 Detection System",
+        "/Subject": f"Mission {mission_id}",
+        "/Creator": "C12 Auto-Capture Pipeline",
     })
 
     with open(out_file, "wb") as f:
