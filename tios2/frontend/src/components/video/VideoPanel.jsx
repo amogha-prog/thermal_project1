@@ -111,83 +111,42 @@ function drawDetections(ctx, W, H, detections) {
   if (!detections || detections.length === 0) return;
 
   detections.forEach((det) => {
-    // Detection may have pixel coords (x,y,w,h > 1) or normalized cx/cy/w/h (<1)
     let dx, dy, dw, dh;
     if (det.is_scaled) {
-      // ── CASE A: Already-scaled pixel coords (from webcam FaceDetector) ──
-      dx = det.x;
-      dy = det.y;
-      dw = det.w;
-      dh = det.h;
-    } else if (det.x !== undefined && det.w !== undefined && det.x > 1) {
-      // ── CASE B: Python pipeline pixel coords relative to 640×480 detection frame ──
+      dx = det.x; dy = det.y; dw = det.w; dh = det.h;
+    } else {
       const scaleX = W / 640;
       const scaleY = H / 480;
-      dx = det.x * scaleX;
-      dy = det.y * scaleY;
-      dw = det.w * scaleX;
-      dh = det.h * scaleY;
-    } else {
-      // ── CASE C: Normalized centre (cx/cy) — legacy fallback ──
-      const cx = (det.cx ?? 0.5) * W;
-      const cy = (det.cy ?? 0.5) * H;
-      dw = det.w ? det.w * W : Math.max(30, W * 0.08);
-      dh = det.h ? det.h * H : Math.max(30, H * 0.08);
-      dx = cx - dw / 2;
-      dy = cy - dh / 2;
+      dx = (det.x || 0) * scaleX;
+      dy = (det.y || 0) * scaleY;
+      dw = (det.w || 0) * scaleX;
+      dh = (det.h || 0) * scaleY;
     }
 
-    // Severity color
-    const colors = {
-      CRITICAL: '#ff2020',
-      WARNING:  '#ff8c00',
-      ELEVATED: '#ffd700',
-      NORMAL:   '#00e5ff',
-    };
-    const color = colors[det.severity] || colors.NORMAL;
+    const color = '#00ff00'; // Pure Green, exactly like the test script!
 
-    // Draw animated bounding box
     ctx.save();
+    
+    // 1. Draw Bounding Box (simple 2px rectangle)
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 8;
     ctx.strokeRect(dx, dy, dw, dh);
-    ctx.shadowBlur = 0;
 
-    // Corner brackets (tactical look)
-    const cs = Math.min(10, dw / 4);
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(dx, dy + cs); ctx.lineTo(dx, dy); ctx.lineTo(dx + cs, dy);
-    ctx.moveTo(dx + dw - cs, dy); ctx.lineTo(dx + dw, dy); ctx.lineTo(dx + dw, dy + cs);
-    ctx.moveTo(dx + dw, dy + dh - cs); ctx.lineTo(dx + dw, dy + dh); ctx.lineTo(dx + dw - cs, dy + dh);
-    ctx.moveTo(dx + cs, dy + dh); ctx.lineTo(dx, dy + dh); ctx.lineTo(dx, dy + dh - cs);
-    ctx.stroke();
-
-    // Temperature label
-    const label = `${det.max_temp?.toFixed(1)}°C`;
-    const sevLabel = det.label || det.severity || '';
-    ctx.font = 'bold 9px "Space Mono",monospace';
+    // 2. Draw Label
+    const conf = det.confidence ? Math.round(det.confidence * 100) : 0;
+    const label = `ID:${det.id || 0} ${det.label || 'object'} [${conf}%]`;
+    
+    ctx.font = 'bold 11px "Segoe UI", sans-serif';
     const tw = ctx.measureText(label).width;
+    const th = 14; // text height approx
+    
+    // Solid green background for text
     ctx.fillStyle = color;
-    ctx.globalAlpha = 0.85;
-    ctx.fillRect(dx, dy - 16, tw + 6, 14);
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = '#000';
-    ctx.fillText(label, dx + 3, dy - 5);
-
-    // Severity badge
-    if (sevLabel && (det.severity === 'CRITICAL' || det.severity === 'WARNING')) {
-      const sw = ctx.measureText(sevLabel).width;
-      ctx.fillStyle = color;
-      ctx.globalAlpha = 0.85;
-      ctx.fillRect(dx + dw - sw - 6, dy + dh + 2, sw + 6, 12);
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#000';
-      ctx.font = 'bold 8px "Space Mono",monospace';
-      ctx.fillText(sevLabel, dx + dw - sw - 3, dy + dh + 11);
-    }
+    ctx.fillRect(dx, dy - th - 4, tw + 6, th + 4);
+    
+    // Black text
+    ctx.fillStyle = '#000000';
+    ctx.fillText(label, dx + 3, dy - 4);
 
     ctx.restore();
   });
@@ -433,178 +392,107 @@ function useRtspStream(canvasRef, active, isThermal, paletteKey, detections) {
 }
 
 
-// ── Webcam Stream (for mobile/testing) ──────────────────────────────────────────
+// ── Webcam Stream (Python MJPEG + UDP Detections) ─────────────────────────────
 function useWebcam(canvasRef, active, isThermal, paletteKey, detections) {
-  const videoRef = useRef(null);
-  const rafRef = useRef(null);
-  const paletteRef = useRef(PALETTES[paletteKey]?.lut ?? PALETTES.ironbow.lut);
-  const detectionsRef = useRef(detections);
-  // Face detector ref — initialized once, reused every frame
-  const faceDetectorRef = useRef(null);
-  // Stable list of face-derived detections updated at ~10fps
-  const faceDetectionsRef = useRef([]);
-  const lastFaceDetectTime = useRef(0);
+  const rafRef = React.useRef(null);
+  const paletteRef = React.useRef(PALETTES[paletteKey]?.lut ?? PALETTES.ironbow.lut);
+  const detectionsRef = React.useRef(detections);
 
-  useEffect(() => {
+  React.useEffect(() => {
     paletteRef.current = PALETTES[paletteKey]?.lut ?? PALETTES.ironbow.lut;
     detectionsRef.current = detections;
   }, [paletteKey, detections]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (!active || !canvasRef.current) return;
-
-    const video = document.createElement('video');
-    video.setAttribute('playsinline', '');
-    video.setAttribute('autoplay', '');
-    video.muted = true;
-    videoRef.current = video;
-
-    const hiddenCanvas = document.createElement('canvas');
-    const hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d', { willReadFrequently: isThermal });
+    
+    // Hidden canvas for processing thermal luma
+    const hiddenCanvas = document.createElement('canvas');
+    const hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
-    // ── FIX 1: Ensure canvas has non-zero dimensions from parent container ──
-    if (canvas.width === 0 || canvas.height === 0) {
-      const parent = canvas.parentElement;
-      if (parent) {
-        canvas.width  = parent.clientWidth  || 640;
-        canvas.height = parent.clientHeight || 480;
-      } else {
-        canvas.width  = 640;
-        canvas.height = 480;
-      }
-    }
+    // Stream raw webcam from Python
+    const baseUrl = `http://${window.location.hostname}:5000`;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = `${baseUrl}/video_feed/webcam?t=${Date.now()}`;
 
-    // ── FIX 2: smoothMin starts at the frame midpoint, not 0/255 ──
-    // This avoids the startup lurch where everything maps wrong
     let smoothMin = 80, smoothMax = 200;
     let localActive = true;
 
-    // Initialize FaceDetector (Chrome 74+ / Edge) — graceful fallback otherwise
-    if ('FaceDetector' in window && !faceDetectorRef.current) {
-      try {
-        faceDetectorRef.current = new window.FaceDetector({
-          fastMode: true,
-          maxDetectedFaces: 8,
-        });
-      } catch (e) {
-        faceDetectorRef.current = null;
+    const drawFrame = () => {
+      if (!localActive) return;
+      rafRef.current = requestAnimationFrame(drawFrame);
+
+      const parent = canvas.parentElement;
+      if (parent) {
+        const pw = parent.clientWidth;
+        const ph = parent.clientHeight;
+        if (pw > 0 && ph > 0 && (canvas.width !== pw || canvas.height !== ph)) {
+          canvas.width  = pw;
+          canvas.height = ph;
+        }
       }
-    }
 
-    const startCamera = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-        });
-        video.srcObject = stream;
+      const W = canvas.width, H = canvas.height;
+      if (!W || !H || !img.complete || img.naturalWidth === 0) return;
 
-        video.onloadedmetadata = () => {
-          video.play();
+      const lut = paletteRef.current;
 
-          const drawFrame = (ts) => {
-            if (!localActive) return;
-            rafRef.current = requestAnimationFrame(drawFrame);
+      if (!isThermal) {
+        // RGB Passthrough
+        ctx.drawImage(img, 0, 0, W, H);
+        // Only drawing detections in thermal view per user request
+        drawLabel(ctx, '● RGB WEBCAM', 6, H - 6, 9);
+      } else {
+        // Thermal Processing
+        const procW = 320, procH = 240;
+        hiddenCanvas.width  = procW;
+        hiddenCanvas.height = procH;
+        hiddenCtx.drawImage(img, 0, 0, procW, procH);
 
-            let W = canvas.width;
-            let H = canvas.height;
+        const frame = hiddenCtx.getImageData(0, 0, procW, procH);
+        const d = frame.data;
+        const pixelCount = procW * procH;
+        let rawMin = 255, rawMax = 0;
+        const span = Math.max(1, smoothMax - smoothMin);
 
-            // ── FIX 1b: Re-sync canvas size from parent on every frame (handles late resize) ──
-            const parent = canvas.parentElement;
-            if (parent) {
-              const pw = parent.clientWidth;
-              const ph = parent.clientHeight;
-              if (pw > 0 && ph > 0 && (canvas.width !== pw || canvas.height !== ph)) {
-                canvas.width  = pw;
-                canvas.height = ph;
-                W = pw; H = ph;
-              }
-            }
+        for (let i = 0; i < pixelCount; i++) {
+          const bi = i << 2;
+          const l  = (d[bi] * 77 + d[bi+1] * 150 + d[bi+2] * 29) >> 8;
+          if (l < rawMin) rawMin = l;
+          if (l > rawMax) rawMax = l;
+          const norm = Math.max(0, Math.min(255, Math.round(((l - smoothMin) / span) * 255)));
+          d[bi]   = lut.r[norm];
+          d[bi+1] = lut.g[norm];
+          d[bi+2] = lut.b[norm];
+        }
 
-            if (!W || !H || video.readyState !== video.HAVE_ENOUGH_DATA) return;
-            const lut = paletteRef.current;
+        smoothMin = smoothMin * 0.85 + rawMin * 0.15;
+        smoothMax = smoothMax * 0.85 + rawMax * 0.15;
 
-            if (!isThermal) {
-              // ── RGB passthrough ──
-              ctx.drawImage(video, 0, 0, W, H);
-            } else {
-              // ── Thermal rendering — process at 320×240 for performance ──
-              const procW = 320, procH = 240;
-              hiddenCanvas.width  = procW;
-              hiddenCanvas.height = procH;
-              hiddenCtx.drawImage(video, 0, 0, procW, procH);
+        hiddenCtx.putImageData(frame, 0, 0);
+        ctx.drawImage(hiddenCanvas, 0, 0, W, H);
 
-              const frame      = hiddenCtx.getImageData(0, 0, procW, procH);
-              const d          = frame.data;
-              const pixelCount = procW * procH;
-              let rawMin = 255, rawMax = 0;
-              const span = Math.max(1, smoothMax - smoothMin);
+        ctx.fillStyle = 'rgba(0,0,0,0.02)';
+        for (let sy = 0; sy < H; sy += 2) ctx.fillRect(0, sy, W, 1);
 
-              // Centre-pixel luma for crosshair temperature
-              const cIdx  = (Math.floor(procH / 2) * procW + Math.floor(procW / 2)) * 4;
-              const cLuma = (d[cIdx] * 77 + d[cIdx+1] * 150 + d[cIdx+2] * 29) >> 8;
-
-              // Single-pass: compute luma → track range → apply palette
-              for (let i = 0; i < pixelCount; i++) {
-                const bi = i << 2;
-                const l  = (d[bi] * 77 + d[bi+1] * 150 + d[bi+2] * 29) >> 8;
-                if (l < rawMin) rawMin = l;
-                if (l > rawMax) rawMax = l;
-                const norm = Math.max(0, Math.min(255, Math.round(((l - smoothMin) / span) * 255)));
-                d[bi]   = lut.r[norm];
-                d[bi+1] = lut.g[norm];
-                d[bi+2] = lut.b[norm];
-              }
-
-              // ── FIX 2: Update smoothed range BEFORE computing centre temperature ──
-              smoothMin = smoothMin * 0.85 + rawMin * 0.15;
-              smoothMax = smoothMax * 0.85 + rawMax * 0.15;
-
-              hiddenCtx.putImageData(frame, 0, 0);
-              ctx.drawImage(hiddenCanvas, 0, 0, W, H);
-
-              // Scanline overlay (subtle CRT effect)
-              ctx.fillStyle = 'rgba(0,0,0,0.02)';
-              for (let sy = 0; sy < H; sy += 2) ctx.fillRect(0, sy, W, 1);
-
-              // Draw detections: prefer FaceDetector results; fall back to Python pipeline
-              const detsToDraw = faceDetectionsRef.current.length > 0
-                ? faceDetectionsRef.current
-                : detectionsRef.current;
-
-              drawDetections(ctx, W, H, detsToDraw);
-            }
-
-            // Timestamp label
-            const now = new Date();
-            const timeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
-            drawLabel(ctx, timeStr, 6, H - 6, 8, false);
-          };
-
-          rafRef.current = requestAnimationFrame(drawFrame);
-        };
-      } catch (err) {
-        console.error('[Webcam] Error accessing camera:', err);
+        drawDetections(ctx, W, H, detectionsRef.current);
+        drawLabel(ctx, '● THERMAL WEBCAM', 6, H - 6, 9);
       }
     };
 
-    startCamera();
+    rafRef.current = requestAnimationFrame(drawFrame);
 
     return () => {
       localActive = false;
       cancelAnimationFrame(rafRef.current);
-      if (video.srcObject) {
-        video.srcObject.getTracks().forEach((t) => t.stop());
-        video.srcObject = null;
-      }
-      videoRef.current = null;
-      faceDetectionsRef.current = [];
+      img.src = '';
     };
   }, [active, isThermal]);
 }
-
 
 // ── VideoPanel component ───────────────────────────────────────────────────────
 const VideoPanel = forwardRef(function VideoPanel({ type }, canvasRef) {

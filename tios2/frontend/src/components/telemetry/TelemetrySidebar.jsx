@@ -73,31 +73,33 @@ function TelCard({ label, value, unit, color = 'text-[#e2eaf4]' }) {
   );
 }
 
-// ── Detection alert row ───────────────────────────────────────────────────────
+// ── Detection alert row (thermal + object label) ─────────────────────────────
 function DetectionRow({ det }) {
   const sevColors = {
-    CRITICAL: 'border-red-500/60 bg-red-900/30 text-red-300',
-    WARNING:  'border-amber-500/50 bg-amber-900/25 text-amber-300',
-    ELEVATED: 'border-yellow-500/40 bg-yellow-900/20 text-yellow-200',
-    NORMAL:   'border-border bg-panel text-muted',
+    CRITICAL: 'border-red-500/60 bg-red-900/30',
+    WARNING:  'border-amber-500/50 bg-amber-900/25',
+    ELEVATED: 'border-yellow-500/40 bg-yellow-900/20',
+    NORMAL:   'border-border bg-panel',
   };
-  const sevStyle = sevColors[det.severity] || sevColors.NORMAL;
+  const tempColor =
+    (det.max_temp || 0) >= 38 ? 'text-red-400' :
+    (det.max_temp || 0) >= 34 ? 'text-amber-300' : 'text-green-400';
 
   return (
-    <div className={`flex items-center gap-2 p-1.5 rounded border transition-all ${sevStyle}`}>
-      <div className="flex-1 min-w-0">
-        <div className="flex justify-between items-center">
-          <span className="font-mono text-[10px] font-bold">
-            {det.max_temp?.toFixed(1)}°C
-          </span>
-          <span className="font-mono text-[8px] uppercase tracking-wider opacity-80">
-            {det.severity}
-          </span>
-        </div>
-        <div className="font-mono text-[8px] opacity-60 truncate mt-0.5">
-          {det.anomaly_type || det.label} · {det.source?.toUpperCase()} · Δ{det.delta_t?.toFixed(0)}°C
-        </div>
+    <div className={`flex items-center justify-between gap-2 p-1.5 rounded border transition-all ${sevColors[det.severity] || sevColors.NORMAL}`}>
+      {/* Object label */}
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="font-mono text-[9px] font-bold uppercase tracking-wider text-[#e2eaf4] truncate">
+          {(det.label || 'object').toUpperCase()}
+        </span>
+        {det.id !== undefined && (
+          <span className="font-mono text-[8px] text-muted">#{det.id}</span>
+        )}
       </div>
+      {/* Temperature */}
+      <span className={`font-mono text-[13px] font-black shrink-0 ${tempColor}`}>
+        {det.max_temp != null ? `${det.max_temp.toFixed(1)}°C` : '—'}
+      </span>
     </div>
   );
 }
@@ -239,22 +241,47 @@ export default function TelemetrySidebar({ onSelectCapture, onShowBrowser, mobil
 
 
 
-      {/* ── Live Detections ──────────────────────────────────────────────── */}
+      {/* ── Thermal Detections (object + temperature) ──────────────────── */}
       {detections.length > 0 && (
         <div className="p-3 border-b border-border">
           <div className="font-mono text-[10px] tracking-[2px] text-muted uppercase mb-2 flex items-center gap-2">
-            Live Detections
+            Thermal Detections
             <span className="bg-thermal text-white font-mono text-[9px] px-1.5 rounded-full leading-none py-0.5">
               {detections.length}
             </span>
             {criticalCount > 0 && (
               <span className="bg-red-600 text-white font-mono text-[8px] px-1.5 rounded-full leading-none py-0.5 animate-pulse">
-                {criticalCount} CRIT
+                {criticalCount} HOT
               </span>
             )}
           </div>
-          <div className="flex flex-col gap-1 max-h-[120px] overflow-y-auto">
-            {detections.slice(0, 5).map((det, i) => (
+
+          {/* Hottest object summary card */}
+          {(() => {
+            const hottest = [...detections].sort((a, b) => (b.max_temp || 0) - (a.max_temp || 0))[0];
+            const tempC = hottest?.max_temp;
+            const col = tempC >= 38 ? '#f87171' : tempC >= 34 ? '#fbbf24' : '#4ade80';
+            return hottest ? (
+              <div className="mb-2 p-2 rounded border border-border bg-panel flex items-center justify-between">
+                <div>
+                  <div className="font-mono text-[8px] text-muted uppercase tracking-wider">Hottest Target</div>
+                  <div className="font-mono text-[11px] font-bold text-[#e2eaf4] mt-0.5">
+                    {(hottest.label || 'object').toUpperCase()}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div style={{ color: col }} className="font-mono text-[18px] font-black leading-none">
+                    {tempC != null ? `${tempC.toFixed(1)}°` : '—'}
+                  </div>
+                  <div className="font-mono text-[8px] text-muted">°C</div>
+                </div>
+              </div>
+            ) : null;
+          })()}
+
+          {/* Per-object list */}
+          <div className="flex flex-col gap-1 max-h-[140px] overflow-y-auto">
+            {detections.slice(0, 6).map((det, i) => (
               <DetectionRow key={`det-${i}`} det={det} />
             ))}
           </div>
