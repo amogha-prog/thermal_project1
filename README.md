@@ -24,6 +24,30 @@ A real-time drone-based thermal inspection platform with high-precision GPS geot
 
 ---
 
+## 📸 Screenshots
+
+### Live Dashboard — Thermal + RGB + Telemetry Sidebar
+*Thermal camera (Black Hot palette) on the left with YOLO tracker active · RGB feed on the right · Telemetry sidebar showing Thermal Detections panel*
+
+![TIOS Dashboard](docs/screenshots/dashboard_main.png)
+
+---
+
+### YOLO Object Tracker on Thermal Camera
+*Green bounding box with `ID:1 person [94%]` label · Sidebar showing Hottest Target = PERSON at 33.8°C*
+
+![YOLO Tracker](docs/screenshots/yolo_tracker.png)
+
+---
+
+### Swapped View — RGB Left · Thermal Right
+*SWAP FEEDS button moves the RGB feed to the primary position · Thermal tracker continues tracking on the right panel*
+
+![Swapped View](docs/screenshots/swapped_view.png)
+
+
+---
+
 ## 📁 Project Structure
 
 ```
